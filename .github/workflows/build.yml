@@ -1,0 +1,63 @@
+name: build
+
+# 交叉编译 vernesong/mihomo 的 Alpha (smart) 分支，去掉 with_gvisor，
+# 产物为裸 aarch64 二进制，命名 mihomo-linux-arm64.upx。
+# ShellCrash 见 .upx 后缀只软链不解压，于是核心从 overlay/ubifs 执行、
+# 代码段可回收，省下约 44MB 常驻内存（详见 juewuy/ShellCrash#1304）。
+# .upx 是借后缀触发该行为，文件本身并非 upx 压缩。
+
+on:
+  schedule:
+    - cron: '0 4 * * *'        # 每日追一次上游
+  workflow_dispatch:            # 手动触发
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write               # 建 release 需要
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vernesong/mihomo Alpha
+        uses: actions/checkout@v4
+        with:
+          repository: vernesong/mihomo
+          ref: Alpha
+          fetch-depth: 0        # git rev-parse 需要完整历史
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'    # 对齐上游 CI 的 linux/arm64 默认，go.mod 的 1.20 编不过
+
+      - name: Resolve version
+        id: ver
+        run: echo "version=alpha-smart-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build (no gvisor, naked binary)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: arm64
+          GOARM64: v8.0
+        run: |
+          go build -trimpath \
+            -ldflags '-X "github.com/metacubex/mihomo/constant.Version=${{ steps.ver.outputs.version }}" -w -s -buildid=' \
+            -o mihomo-linux-arm64.upx .
+          chmod +x mihomo-linux-arm64.upx
+          ./mihomo-linux-arm64.upx -v
+
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: ${{ steps.ver.outputs.version }} (no gvisor)
+          body: |
+            vernesong/mihomo Alpha (smart), 去掉 `with_gvisor`，裸 aarch64 二进制。
+            上游 commit: ${{ steps.ver.outputs.version }}
+            ShellCrash 用法: `custcorelink` 指向本 release 的 `mihomo-linux-arm64.upx`。
+          files: mihomo-linux-arm64.upx
+          make_latest: 'true'
