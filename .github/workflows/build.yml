@@ -48,7 +48,9 @@ jobs:
             -ldflags '-X "github.com/metacubex/mihomo/constant.Version=${{ steps.ver.outputs.version }}" -w -s -buildid=' \
             -o mihomo-linux-arm64.upx .
           chmod +x mihomo-linux-arm64.upx
-          ./mihomo-linux-arm64.upx -v
+          # 交叉编译产物无法在 amd64 runner 上执行，只做格式与体积校验
+          file mihomo-linux-arm64.upx | tee /dev/stderr | grep -q 'ARM aarch64'
+          ls -l mihomo-linux-arm64.upx
 
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
