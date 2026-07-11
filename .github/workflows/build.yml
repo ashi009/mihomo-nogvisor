@@ -1,10 +1,14 @@
 name: build
 
 # 交叉编译 vernesong/mihomo 的 Alpha (smart) 分支，去掉 with_gvisor，
-# 产物为裸 aarch64 二进制，命名 mihomo-linux-arm64.upx。
-# ShellCrash 见 .upx 后缀只软链不解压，于是核心从 overlay/ubifs 执行、
-# 代码段可回收，省下约 44MB 常驻内存（详见 juewuy/ShellCrash#1304）。
-# .upx 是借后缀触发该行为，文件本身并非 upx 压缩。
+# 发布两个产物（同一个裸 aarch64 二进制的不同封装）：
+#   mihomo-linux-arm64.gz  —— 推荐。ShellCrash #1305 起，tmpfs+压缩rom 设备会
+#                             把它解出的裸二进制存于 rom(透明压缩)并软链，运行时
+#                             file-backed 可回收(RssShmem 0)；下载量约 15M。
+#   mihomo-linux-arm64.upx —— 兼容旧版 ShellCrash(无 #1305)。名为 .upx 但实为裸
+#                             二进制，走「只软链」分支从 rom 执行，同样省内存；
+#                             下载量为完整 31M。升级 ShellCrash 后改用 .gz。
+# 详见 juewuy/ShellCrash#1304 / #1305。
 
 on:
   schedule:
@@ -37,7 +41,7 @@ jobs:
         id: ver
         run: echo "version=alpha-smart-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Build (no gvisor, naked binary)
+      - name: Build (no gvisor)
         env:
           CGO_ENABLED: '0'
           GOOS: linux
@@ -46,11 +50,13 @@ jobs:
         run: |
           go build -trimpath \
             -ldflags '-X "github.com/metacubex/mihomo/constant.Version=${{ steps.ver.outputs.version }}" -w -s -buildid=' \
-            -o mihomo-linux-arm64.upx .
-          chmod +x mihomo-linux-arm64.upx
+            -o mihomo-linux-arm64 .
           # 交叉编译产物无法在 amd64 runner 上执行，只做格式与体积校验
-          file mihomo-linux-arm64.upx | tee /dev/stderr | grep -q 'ARM aarch64'
-          ls -l mihomo-linux-arm64.upx
+          file mihomo-linux-arm64 | tee /dev/stderr | grep -q 'ARM aarch64'
+          # .gz：gzip 压缩(下载~15M)；.upx：同一裸二进制原样改名(兼容旧版)
+          gzip -c -9 mihomo-linux-arm64 > mihomo-linux-arm64.gz
+          cp mihomo-linux-arm64 mihomo-linux-arm64.upx
+          ls -l mihomo-linux-arm64 mihomo-linux-arm64.gz mihomo-linux-arm64.upx
 
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
@@ -58,8 +64,13 @@ jobs:
           tag_name: latest
           name: ${{ steps.ver.outputs.version }} (no gvisor)
           body: |
-            vernesong/mihomo Alpha (smart), 去掉 `with_gvisor`，裸 aarch64 二进制。
+            vernesong/mihomo Alpha (smart)，去掉 `with_gvisor`，裸 aarch64 二进制。
             上游 commit: ${{ steps.ver.outputs.version }}
-            ShellCrash 用法: `custcorelink` 指向本 release 的 `mihomo-linux-arm64.upx`。
-          files: mihomo-linux-arm64.upx
+
+            ShellCrash `custcorelink`：
+            - 新版(含 #1305 store-raw)：指向 `mihomo-linux-arm64.gz`（下载约 15M）。
+            - 旧版：指向 `mihomo-linux-arm64.upx`（裸二进制，下载 31M）。
+          files: |
+            mihomo-linux-arm64.gz
+            mihomo-linux-arm64.upx
           make_latest: 'true'
