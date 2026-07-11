@@ -1,14 +1,9 @@
 name: build
 
 # 交叉编译 vernesong/mihomo 的 Alpha (smart) 分支，去掉 with_gvisor，
-# 发布两个产物（同一个裸 aarch64 二进制的不同封装）：
-#   mihomo-linux-arm64.gz  —— 推荐。ShellCrash #1305 起，tmpfs+压缩rom 设备会
-#                             把它解出的裸二进制存于 rom(透明压缩)并软链，运行时
-#                             file-backed 可回收(RssShmem 0)；下载量约 15M。
-#   mihomo-linux-arm64.upx —— 兼容旧版 ShellCrash(无 #1305)。名为 .upx 但实为裸
-#                             二进制，走「只软链」分支从 rom 执行，同样省内存；
-#                             下载量为完整 31M。升级 ShellCrash 后改用 .gz。
-# 详见 juewuy/ShellCrash#1304 / #1305。
+# 发布 gzip 封装的裸 aarch64 二进制 mihomo-linux-arm64.gz（下载约 11M）。
+# ShellCrash #1305 起，tmpfs+压缩rom 设备会把它解出的裸二进制存于 rom(透明压缩)
+# 并软链，运行时 file-backed 可回收(RssShmem 0)。详见 juewuy/ShellCrash#1304 / #1305。
 
 on:
   schedule:
@@ -53,10 +48,8 @@ jobs:
             -o mihomo-linux-arm64 .
           # 交叉编译产物无法在 amd64 runner 上执行，只做格式与体积校验
           file mihomo-linux-arm64 | tee /dev/stderr | grep -q 'ARM aarch64'
-          # .gz：gzip 压缩(下载~15M)；.upx：同一裸二进制原样改名(兼容旧版)
           gzip -c -9 mihomo-linux-arm64 > mihomo-linux-arm64.gz
-          cp mihomo-linux-arm64 mihomo-linux-arm64.upx
-          ls -l mihomo-linux-arm64 mihomo-linux-arm64.gz mihomo-linux-arm64.upx
+          ls -l mihomo-linux-arm64 mihomo-linux-arm64.gz
 
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
@@ -67,10 +60,7 @@ jobs:
             vernesong/mihomo Alpha (smart)，去掉 `with_gvisor`，裸 aarch64 二进制。
             上游 commit: ${{ steps.ver.outputs.version }}
 
-            ShellCrash `custcorelink`：
-            - 新版(含 #1305 store-raw)：指向 `mihomo-linux-arm64.gz`（下载约 15M）。
-            - 旧版：指向 `mihomo-linux-arm64.upx`（裸二进制，下载 31M）。
+            ShellCrash `custcorelink` 指向 `mihomo-linux-arm64.gz`（需 ShellCrash #1305+）。
           files: |
             mihomo-linux-arm64.gz
-            mihomo-linux-arm64.upx
           make_latest: 'true'
