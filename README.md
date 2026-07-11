@@ -23,30 +23,20 @@
 
 ## 产物
 
-`latest` release 发布同一裸二进制的两种封装：
-
-| 资产 | 下载量 | 适用 |
-|---|---|---|
-| `mihomo-linux-arm64.gz` | 约 15MB | **推荐**。ShellCrash [#1305](https://github.com/juewuy/ShellCrash/pull/1305) 起，tmpfs + 压缩 rom 设备会自动把它解出的裸二进制存于 rom 并软链（`RssShmem` 归零） |
-| `mihomo-linux-arm64.upx` | 31MB | 兼容旧版 ShellCrash（无 #1305）。名为 `.upx` 但实为裸二进制，走「只软链」分支从 rom 执行，同样省内存 |
-
-`.upx` 是借后缀触发旧版 ShellCrash 的「只软链、不解压」路径，文件本身并非 upx 压缩。
+`latest` release 发布 `mihomo-linux-arm64.gz`（gzip 封装的裸二进制，下载约 11MB）。
+需 ShellCrash [#1305](https://github.com/juewuy/ShellCrash/pull/1305) 及以后版本 ——
+它在 tmpfs + 压缩 rom 设备上会把解出的裸二进制存于 rom 并软链，运行时 `RssShmem` 归零。
 
 ## 用法
 
-在 ShellCrash 里把自定义内核链接（`custcorelink`）设为对应资产：
+在 ShellCrash 里把自定义内核链接（`custcorelink`）设为：
 
 ```
-# 新版 ShellCrash（含 #1305 store-raw）——推荐，下载约 15MB
 https://github.com/ashi009/mihomo-nogvisor/releases/latest/download/mihomo-linux-arm64.gz
-
-# 旧版 ShellCrash——裸二进制，下载 31MB
-https://github.com/ashi009/mihomo-nogvisor/releases/latest/download/mihomo-linux-arm64.upx
 ```
 
-菜单：`crash` → 内核管理 → 自定义内核链接，粘贴上面的 URL。ShellCrash 会据后缀
-自动选择存储方式并持久化 `zip_type` 与 `custcorelink`，之后每次更新内核都会自动
-重建这套布置，无需手工干预。
+菜单：`crash` → 内核管理 → 自定义内核链接，粘贴上面的 URL。ShellCrash 会持久化
+`zip_type` 与 `custcorelink`，之后每次更新内核都会自动重建这套布置，无需手工干预。
 
 ## 版本
 
@@ -62,13 +52,12 @@ https://github.com/ashi009/mihomo-nogvisor/releases/latest/download/mihomo-linux
 
 ## 构建配方
 
-与 vernesong 官方一致，仅去掉 `-tags with_gvisor`；产物再分别 gzip 与原样改名：
+与 vernesong 官方一致，仅去掉 `-tags with_gvisor`，产物再 gzip：
 
 ```
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOARM64=v8.0 \
   go build -trimpath \
     -ldflags '-X "github.com/metacubex/mihomo/constant.Version=alpha-smart-<hash>" -w -s -buildid=' \
     -o mihomo-linux-arm64 .
-gzip -c -9 mihomo-linux-arm64 > mihomo-linux-arm64.gz   # 推荐资产
-cp          mihomo-linux-arm64   mihomo-linux-arm64.upx  # 兼容旧版
+gzip -c -9 mihomo-linux-arm64 > mihomo-linux-arm64.gz
 ```
