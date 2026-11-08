@@ -2,7 +2,7 @@
 
 The native build uses a pinned, clean vernesong/mihomo source archive. The core
 revision and patched dependency versions live in `upstream.json`. We keep
-our backend in `native/component/tailnet`, and apply small patches last:
+our backend in `native/component/tailnet`, and apply independent patches last:
 
 - `patches/0001-config.patch`: decode and validate the `tailnet` configuration.
 - `patches/0002-lifecycle.patch`: start/reuse the backend and shut it down.
@@ -14,7 +14,8 @@ our backend in `native/component/tailnet`, and apply small patches last:
 `patches/sing-tun/0001-capture-policy.patch` adds hooks to the pinned sing-tun.
 The policy implementation is owned code in `native/sing-tun`, copied
 into the disposable dependency tree by `prepare-sing-tun.sh`. Both dependency
-queues use local module replacements; no upstream source is committed here.
+queues use local module replacements; restored upstream packages are carried
+as explicit patches rather than a checked-in source tree.
 
 `git apply` fails on conflicting upstream changes. There is no copied upstream
 source tree to maintain. The legacy ShellCrash release is manual-only;
@@ -57,14 +58,23 @@ main pushes also run native checks. No write token is exposed to the build job.
 Repository Actions settings must permit workflows to create PRs. Only the
 proposal/report jobs request write permissions. Build artifacts identify both
 the upstream and local patch revision in their version string. The workflow
-keeps logs, the binary and its checksum as run artifacts.
+reports stripped ARM64 and gzip sizes in the run summary and uploads both
+artifacts, size.json, size.md, version, checksums and test logs.
 
-One dependency fix is maintained separately in `patches/tailscale/`.
+The Tailscale dependency queue is maintained separately in `patches/tailscale/`.
 `prepare-tailscale.sh` copies the pinned module into the disposable build
 directory, applies that queue, and adds a local module replacement. The shared
 module cache stays unchanged. The fix lets native injected packets pass the
 GSO checksum helper when netstack is omitted; the original helper panicked on
 TSMP traffic. It is covered by traffic tests against the shipping executable.
+
+The ff0ecd818181 update removed native OS routing and test infrastructure.
+`0002-native-os-router.patch` restores osrouter and linuxfw from the previous
+1ab893d4162c pin; `0003-test-helpers.patch` restores local control/DERP/STUN
+helpers and their missing imports from the same pin. They remain separate from
+the injected-packet fix. To verify these imports against their source, compare
+the added files with the 1ab893d4162c module archive. The native backend now
+sets bootstrap DNS through `System.LookupHook`, matching the new API.
 
 The Tailscale fork removed native TUN creation. We restore that through a pinned
 native TUN dependency and an event adapter. Its otherwise-unused Linux router

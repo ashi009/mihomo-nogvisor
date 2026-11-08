@@ -1,6 +1,17 @@
+From d409b82d2237c5ee7061fce460b17c67d3debf53 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 05:48:18 +0800
+Subject: [PATCH] 0002-lifecycle
+
+---
+ hub/executor/executor.go | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/hub/executor/executor.go b/hub/executor/executor.go
+index 8b64e4f..6d9863a 100644
 --- a/hub/executor/executor.go
 +++ b/hub/executor/executor.go
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,7 @@ package executor
  
  import (
  	"fmt"
@@ -8,7 +19,7 @@
  	"net"
  	"net/netip"
  	"os"
-@@ -87,6 +88,10 @@
+@@ -87,6 +88,10 @@ func ApplyConfig(cfg *config.Config, force bool) {
  	defer mux.Unlock()
  	log.SetLevel(cfg.General.LogLevel)
  
@@ -19,7 +30,7 @@
  	tunnel.OnSuspend()
  
  	ca.ResetCertificate()
-@@ -551,6 +556,7 @@
+@@ -551,6 +556,7 @@ func closeSmart() {
  }
  
  func Shutdown() {

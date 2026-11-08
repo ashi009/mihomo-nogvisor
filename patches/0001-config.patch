@@ -1,6 +1,17 @@
+From cc64b359903ce401456d45f0bd4b8b5c179b846e Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 05:48:18 +0800
+Subject: [PATCH] 0001-config
+
+---
+ config/config.go | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/config/config.go b/config/config.go
+index f252a26..2a940e9 100644
 --- a/config/config.go
 +++ b/config/config.go
-@@ -3,6 +3,7 @@
+@@ -3,6 +3,7 @@ package config
  import (
  	"errors"
  	"fmt"
@@ -8,7 +19,7 @@
  	"net"
  	"net/netip"
  	"net/url"
-@@ -199,6 +200,7 @@
+@@ -199,6 +200,7 @@ type TLS struct {
  
  // Config is mihomo config manager
  type Config struct {
@@ -16,7 +27,7 @@
  	General       *General
  	Controller    *Controller
  	Experimental  *Experimental
-@@ -404,6 +406,7 @@
+@@ -409,6 +411,7 @@ type RawTLS struct {
  }
  
  type RawConfig struct {
@@ -24,7 +35,7 @@
  	Port                          int                     `yaml:"port" json:"port"`
  	SocksPort                     int                     `yaml:"socks-port" json:"socks-port"`
  	RedirPort                     int                     `yaml:"redir-port" json:"redir-port"`
-@@ -632,6 +635,11 @@
+@@ -638,6 +641,11 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
  
  func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
  	config := &Config{}

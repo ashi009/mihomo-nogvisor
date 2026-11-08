@@ -195,6 +195,7 @@ func Start(c Config) (service *Service, retErr error) {
 		}
 		return resolver.LookupIPWithResolver(ctx, host, resolver.ProxyServerHostResolver)
 	}
+	sys.LookupHook = dialer.LookupHook
 	dialer.SetBus(sys.Bus.Get())
 	sys.Set(dialer)
 	add(func() { dialer.Close() })
@@ -239,7 +240,7 @@ func Start(c Config) (service *Service, retErr error) {
 	}
 	sys.Set(st)
 	sys.Tun.Get().Start()
-	backend, err := ipnlocal.NewLocalBackend(logf, logid.PublicID{}, sys, controlclient.LoginDefault, dialer.LookupHook)
+	backend, err := ipnlocal.NewLocalBackend(logf, logid.PublicID{}, sys, controlclient.LoginDefault)
 	if err != nil {
 		eng.Close()
 		return nil, err

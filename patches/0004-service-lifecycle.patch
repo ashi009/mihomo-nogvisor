@@ -1,116 +1,19 @@
---- a/main.go
-+++ b/main.go
-@@ -19,6 +19,7 @@
- 	"github.com/metacubex/mihomo/component/age"
- 	"github.com/metacubex/mihomo/component/generator"
- 	"github.com/metacubex/mihomo/component/geodata"
-+	"github.com/metacubex/mihomo/component/native"
- 	"github.com/metacubex/mihomo/component/updater"
- 	"github.com/metacubex/mihomo/config"
- 	C "github.com/metacubex/mihomo/constant"
-@@ -32,6 +33,8 @@
- )
- 
- var (
-+	serviceMode                   bool
-+	cleanupMode                   bool
- 	version                       bool
- 	testConfig                    bool
- 	geodataMode                   bool
-@@ -58,6 +61,8 @@
- }
- 
- func init() {
-+	flag.BoolVar(&serviceMode, "service", false, "supervise native service ownership")
-+	flag.BoolVar(&cleanupMode, "cleanup", false, "remove stopped native service network state")
- 	flag.StringVar(&homeDir, "d", os.Getenv("CLASH_HOME_DIR"), "set configuration directory")
- 	flag.StringVar(&configFile, "f", os.Getenv("CLASH_CONFIG_FILE"), "specify configuration file")
- 	flag.StringVar(&configString, "config", os.Getenv("CLASH_CONFIG_STRING"), "specify base64-encoded configuration string")
-@@ -190,6 +195,20 @@
- 		return
- 	}
- 
-+	if serviceMode || cleanupMode {
-+		lock, err := native.Lock(C.Path.HomeDir())
-+		if err != nil {
-+			log.Fatalln("Native service lock: %v", err)
-+		}
-+		defer lock.Close()
-+		if err := native.Cleanup(C.Path.Config()); err != nil {
-+			log.Fatalln("Native cleanup: %v", err)
-+		}
-+		if cleanupMode {
-+			return
-+		}
-+	}
-+
- 	var options []hub.Option
- 	if externalUI != "" {
- 		options = append(options, hub.WithExternalUI(externalUI))
---- a/hub/executor/executor.go
-+++ b/hub/executor/executor.go
-@@ -89,8 +89,8 @@
- 	log.SetLevel(cfg.General.LogLevel)
- 
- 	if err := tailnet.Apply(cfg.Tailnet); err != nil {
--		log.Errorln("[Tailnet] startup failed: %v", err)
--		return
-+		Shutdown()
-+		log.Fatalln("[Tailnet] startup failed: %v", err)
- 	}
- 	tunnel.OnSuspend()
- 
-@@ -110,9 +110,19 @@
- 	updateHosts(cfg.Hosts)
- 	updateGeneral(cfg.General, true)
- 	updateNTP(cfg.NTP)
--	updateDNS(cfg.DNS, cfg.General.IPv6)
-+	if err := updateDNS(cfg.DNS, cfg.General.IPv6); err != nil {
-+		if cfg.General.Tun.CapturePolicy != nil {
-+			Shutdown()
-+			log.Fatalln("[Native] DNS startup failed: %v", err)
-+		}
-+		log.Errorln("DNS startup failed: %v", err)
-+	}
- 	updateListeners(cfg.General, cfg.Listeners, force)
- 	updateTun(cfg.General) // tun should not care "force"
-+	if cfg.General.Tun.Enable && cfg.General.Tun.CapturePolicy != nil && !listener.GetTunConf().Enable {
-+		Shutdown()
-+		log.Fatalln("[Native] interception startup failed")
-+	}
- 	updateIPTables(cfg)
- 	updateTunnels(cfg.Tunnels)
- 
-@@ -245,15 +255,14 @@
- 	}
- }
- 
--func updateDNS(c *config.DNS, generalIPv6 bool) {
-+func updateDNS(c *config.DNS, generalIPv6 bool) error {
- 	if !c.Enable {
- 		resolver.DefaultResolver = nil
- 		resolver.DefaultHostMapper = nil
- 		resolver.DefaultService = nil
- 		resolver.ProxyServerHostResolver = nil
- 		resolver.DirectHostResolver = nil
--		dns.ReCreateServer("", nil, nil)
--		return
-+		return dns.ReCreateServer("", nil, nil)
- 	}
- 
- 	ipv6 := c.IPv6 && generalIPv6
-@@ -310,7 +319,7 @@
- 
- 	lc := inbound.NewListenConfig()
- 	lc.SetRouteMark(c.ListenRoutingMark)
--	dns.ReCreateServer(c.Listen, lc, s)
-+	return dns.ReCreateServer(c.Listen, lc, s)
- }
- 
- func updateHosts(tree *trie.DomainTrie[resolver.HostValue]) {
+From 18d2008d7532c5e47c83264e6173e0b2993a17ce Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 05:48:18 +0800
+Subject: [PATCH] 0004-service-lifecycle
+
+---
+ dns/server.go            | 82 +++++++++++++++-------------------------
+ hub/executor/executor.go | 23 +++++++----
+ main.go                  | 19 ++++++++++
+ 3 files changed, 66 insertions(+), 58 deletions(-)
+
+diff --git a/dns/server.go b/dns/server.go
+index d476c29..68a3b18 100644
 --- a/dns/server.go
 +++ b/dns/server.go
-@@ -43,70 +43,50 @@
+@@ -61,70 +61,50 @@ func (s *Server) SetService(service resolver.Service) {
  	s.service = service
  }
  
@@ -172,8 +75,8 @@
 +		log.Warnln("Failed to Reuse UDP Address: %s", err)
 +	}
 +	next := &Server{service: service}
-+	next.udpServer = &D.Server{Addr: addr, PacketConn: p, Handler: next}
-+	next.tcpServer = &D.Server{Addr: addr, Listener: l, Handler: next}
++	next.udpServer = &D.Server{Addr: addr, PacketConn: p, Handler: next.UDPHandler()}
++	next.tcpServer = &D.Server{Addr: addr, Listener: l, Handler: next.TCPHandler()}
 +	server = next
  	address = addr
 -	server = &Server{service: service}
@@ -190,7 +93,7 @@
 -		}
 -
 -		log.Infoln("DNS server(UDP) listening at: %s", p.LocalAddr().String())
--		server.udpServer = &D.Server{Addr: addr, PacketConn: p, Handler: server}
+-		server.udpServer = &D.Server{Addr: addr, PacketConn: p, Handler: server.UDPHandler()}
 -		_ = server.udpServer.ActivateAndServe()
 -	}()
 -
@@ -202,7 +105,7 @@
 -		}
 -
 -		log.Infoln("DNS server(TCP) listening at: %s", l.Addr().String())
--		server.tcpServer = &D.Server{Addr: addr, Listener: l, Handler: server}
+-		server.tcpServer = &D.Server{Addr: addr, Listener: l, Handler: server.TCPHandler()}
 -		_ = server.tcpServer.ActivateAndServe()
 -	}()
 -
@@ -212,3 +115,118 @@
 +	go next.tcpServer.ActivateAndServe()
 +	return nil
  }
+diff --git a/hub/executor/executor.go b/hub/executor/executor.go
+index 6d9863a..96a5b8b 100644
+--- a/hub/executor/executor.go
++++ b/hub/executor/executor.go
+@@ -89,8 +89,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
+ 	log.SetLevel(cfg.General.LogLevel)
+ 
+ 	if err := tailnet.Apply(cfg.Tailnet); err != nil {
+-		log.Errorln("[Tailnet] startup failed: %v", err)
+-		return
++		Shutdown()
++		log.Fatalln("[Tailnet] startup failed: %v", err)
+ 	}
+ 	tunnel.OnSuspend()
+ 
+@@ -109,10 +109,20 @@ func ApplyConfig(cfg *config.Config, force bool) {
+ 	updateSniffer(cfg.Sniffer)
+ 	updateHosts(cfg.Hosts)
+ 	updateGeneral(cfg.General, true)
+-	updateDNS(cfg.DNS, cfg.General.IPv6)
++	if err := updateDNS(cfg.DNS, cfg.General.IPv6); err != nil {
++		if cfg.General.Tun.CapturePolicy != nil {
++			Shutdown()
++			log.Fatalln("[Native] DNS startup failed: %v", err)
++		}
++		log.Errorln("DNS startup failed: %v", err)
++	}
+ 	updateNTP(cfg.NTP) // initialize NTP after DNS because an NTP server may be a hostname.
+ 	updateListeners(cfg.General, cfg.Listeners, force)
+ 	updateTun(cfg.General) // tun should not care "force"
++	if cfg.General.Tun.Enable && cfg.General.Tun.CapturePolicy != nil && !listener.GetTunConf().Enable {
++		Shutdown()
++		log.Fatalln("[Native] interception startup failed")
++	}
+ 	updateIPTables(cfg)
+ 	updateTunnels(cfg.Tunnels)
+ 
+@@ -245,15 +255,14 @@ func updateNTP(c *config.NTP) {
+ 	}
+ }
+ 
+-func updateDNS(c *config.DNS, generalIPv6 bool) {
++func updateDNS(c *config.DNS, generalIPv6 bool) error {
+ 	if !c.Enable {
+ 		resolver.DefaultResolver = nil
+ 		resolver.DefaultHostMapper = nil
+ 		resolver.DefaultService = nil
+ 		resolver.ProxyServerHostResolver = nil
+ 		resolver.DirectHostResolver = nil
+-		dns.ReCreateServer("", nil, nil)
+-		return
++		return dns.ReCreateServer("", nil, nil)
+ 	}
+ 
+ 	ipv6 := c.IPv6 && generalIPv6
+@@ -310,7 +319,7 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
+ 
+ 	lc := inbound.NewListenConfig()
+ 	lc.SetRouteMark(c.ListenRoutingMark)
+-	dns.ReCreateServer(c.Listen, lc, s)
++	return dns.ReCreateServer(c.Listen, lc, s)
+ }
+ 
+ func updateHosts(tree *trie.DomainTrie[resolver.HostValue]) {
+diff --git a/main.go b/main.go
+index 1c162f4..7199e72 100644
+--- a/main.go
++++ b/main.go
+@@ -19,6 +19,7 @@ import (
+ 	"github.com/metacubex/mihomo/component/age"
+ 	"github.com/metacubex/mihomo/component/generator"
+ 	"github.com/metacubex/mihomo/component/geodata"
++	"github.com/metacubex/mihomo/component/native"
+ 	"github.com/metacubex/mihomo/component/updater"
+ 	"github.com/metacubex/mihomo/config"
+ 	C "github.com/metacubex/mihomo/constant"
+@@ -32,6 +33,8 @@ import (
+ )
+ 
+ var (
++	serviceMode                   bool
++	cleanupMode                   bool
+ 	version                       bool
+ 	testConfig                    bool
+ 	geodataMode                   bool
+@@ -58,6 +61,8 @@ func getIntEnv(key string) int {
+ }
+ 
+ func init() {
++	flag.BoolVar(&serviceMode, "service", false, "supervise native service ownership")
++	flag.BoolVar(&cleanupMode, "cleanup", false, "remove stopped native service network state")
+ 	flag.StringVar(&homeDir, "d", os.Getenv("CLASH_HOME_DIR"), "set configuration directory")
+ 	flag.StringVar(&configFile, "f", os.Getenv("CLASH_CONFIG_FILE"), "specify configuration file")
+ 	flag.StringVar(&configString, "config", os.Getenv("CLASH_CONFIG_STRING"), "specify base64-encoded configuration string")
+@@ -190,6 +195,20 @@ func main() {
+ 		return
+ 	}
+ 
++	if serviceMode || cleanupMode {
++		lock, err := native.Lock(C.Path.HomeDir())
++		if err != nil {
++			log.Fatalln("Native service lock: %v", err)
++		}
++		defer lock.Close()
++		if err := native.Cleanup(C.Path.Config()); err != nil {
++			log.Fatalln("Native cleanup: %v", err)
++		}
++		if cleanupMode {
++			return
++		}
++	}
++
+ 	var options []hub.Option
+ 	if externalUI != "" {
+ 		options = append(options, hub.WithExternalUI(externalUI))
