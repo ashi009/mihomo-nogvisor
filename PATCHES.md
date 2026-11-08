@@ -218,3 +218,11 @@ removed, retaining the existing tailscale0 firewall zone and required routing
 packages. A private configuration recovery archive remains on the router.
 No changes were deployed to 10.1 or 30.1. Sustained throughput, WAN reconnects
 and application-specific Twingate acceptance remain unmeasured.
+
+The native target explicitly enables `unified-delay`, matching 10.1 and
+FlClash. Before this setting, the same two Japan nodes and HTTPS health-check
+URL measured 429–478 ms on 20.1 versus 102–116 ms on 10.1. Changing only this
+setting produced 105–110 ms on 20.1, 101–108 ms on 10.1 and 108–121 ms in
+FlClash across six matched tests. This changes the reported timing to a second
+request on the established connection; it does not reduce connection setup
+latency. 10.1 was used read-only as the comparison router.

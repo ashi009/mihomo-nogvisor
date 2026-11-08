@@ -2,6 +2,8 @@
 function(lan='192.168.20.0/24', mtu=1500) {
   // Console goes to logd; dashboard subscribers still receive info/debug events.
   'log-level': 'warning',
+  // Match the existing router/FlClash health-check timing semantics.
+  'unified-delay': true,
   tun: {
     enable: true,
     device: 'utun',
