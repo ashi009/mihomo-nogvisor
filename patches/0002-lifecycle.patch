@@ -1,0 +1,29 @@
+--- a/hub/executor/executor.go
++++ b/hub/executor/executor.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"fmt"
++	"github.com/metacubex/mihomo/component/tailnet"
+ 	"net"
+ 	"net/netip"
+ 	"os"
+@@ -87,6 +88,10 @@
+ 	defer mux.Unlock()
+ 	log.SetLevel(cfg.General.LogLevel)
+ 
++	if err := tailnet.Apply(cfg.Tailnet); err != nil {
++		log.Errorln("[Tailnet] startup failed: %v", err)
++		return
++	}
+ 	tunnel.OnSuspend()
+ 
+ 	ca.ResetCertificate()
+@@ -551,6 +556,7 @@
+ }
+ 
+ func Shutdown() {
++	tailnet.Shutdown()
+ 	listener.Cleanup()
+ 	tproxy.CleanupTProxyIPTables()
+ 	resolver.StoreFakePoolState()

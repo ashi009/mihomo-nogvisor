@@ -1,0 +1,321 @@
+//go:build linux && with_gvisor
+
+package tailnet
+
+import (
+	"context"
+	"io"
+	"net"
+	"net/http/httptest"
+	"net/netip"
+	"testing"
+	"time"
+
+	"bytes"
+	"encoding/json"
+	C "github.com/metacubex/mihomo/constant"
+	mdns "github.com/metacubex/mihomo/dns"
+	"github.com/metacubex/tailscale/derp/derpserver"
+	"github.com/metacubex/tailscale/ipn"
+	"github.com/metacubex/tailscale/net/netns"
+	"github.com/metacubex/tailscale/net/stun/stuntest"
+	"github.com/metacubex/tailscale/tailcfg"
+	"github.com/metacubex/tailscale/tsnet"
+	"github.com/metacubex/tailscale/tstest/integration/testcontrol"
+	"github.com/metacubex/tailscale/types/key"
+	"github.com/metacubex/tailscale/types/logger"
+	"github.com/metacubex/tailscale/types/nettype"
+	D "github.com/miekg/dns"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+)
+
+// This probe uses only a disposable local control plane, local DERP/STUN,
+// and loopback backends. It never joins the production tailnet.
+func TestNativeSubnetAndMagicDNS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	netns.SetEnabled(false)
+	defer netns.SetEnabled(true)
+	derp := derpserver.New(key.NewNode(), logger.Discard)
+	defer derp.Close()
+	relay := httptest.NewTLSServer(derpserver.Handler(derp))
+	defer relay.Close()
+	stun, closeStun := stuntest.ServeWithPacketListener(t, nettype.Std{})
+	defer closeStun()
+	control := &testcontrol.Server{
+		DERPMap:        &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{1: {RegionID: 1, RegionCode: "test", Nodes: []*tailcfg.DERPNode{{Name: "t1", RegionID: 1, HostName: "127.0.0.1", IPv4: "127.0.0.1", IPv6: "none", STUNPort: stun.Port, STUNTestIP: "127.0.0.1", DERPPort: relay.Listener.Addr().(*net.TCPAddr).Port, InsecureForTests: true}}}}},
+		DNSConfig:      &tailcfg.DNSConfig{Proxied: true},
+		MagicDNSDomain: "probe.ts.net", Logf: logger.Discard,
+	}
+	control.HTTPTestServer = httptest.NewServer(control)
+	defer control.HTTPTestServer.Close()
+	C.SetHomeDir(t.TempDir())
+	raw, err := os.ReadFile("/test/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input struct {
+		Tailnet Config `json:"tailnet"`
+	}
+	if err = json.Unmarshal(raw, &input); err != nil {
+		t.Fatal(err)
+	}
+	cfg := input.Tailnet
+	cfg.ControlURL = control.HTTPTestServer.URL
+	cfg.StateDir = t.TempDir()
+	gateway, err := Start(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gateway.Close()
+	deadline := time.Now().Add(20 * time.Second)
+	for gateway.backend.State() != ipn.Running {
+		if time.Now().After(deadline) {
+			t.Fatal("native backend not running")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	status := gateway.backend.Status()
+	prefix := cfg.AdvertiseRoutes[0]
+	control.SetSubnetRoutes(status.Self.PublicKey, []netip.Prefix{prefix})
+	if _, err := net.InterfaceByName(cfg.Interface); err != nil {
+		t.Fatal(err)
+	}
+
+	tcpBackend, err := net.Listen("tcp", "192.0.2.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpBackend.Close()
+	go func() {
+		for {
+			c, err := tcpBackend.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); io.Copy(c, c) }()
+		}
+	}()
+	udpBackend, err := net.ListenPacket("udp", "192.0.2.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpBackend.Close()
+	go func() {
+		b := make([]byte, 4096)
+		for {
+			n, a, e := udpBackend.ReadFrom(b)
+			if e != nil {
+				return
+			}
+			udpBackend.WriteTo(b[:n], a)
+		}
+	}()
+
+	peer := &tsnet.Server{Dir: t.TempDir(), Hostname: "probe-peer", ControlURL: control.HTTPTestServer.URL, Logf: logger.Discard}
+	defer peer.Close()
+	if _, err := peer.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pc, err := peer.LocalClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pc.EditPrefs(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{RouteAll: true}, RouteAllSet: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, network := range []string{"tcp", "udp"} {
+		t.Run(network, func(t *testing.T) {
+			var last error
+			for attempt := 0; attempt < 20; attempt++ {
+				c, e := peer.Dial(ctx, network, func() string {
+					if network == "tcp" {
+						return tcpBackend.Addr().String()
+					}
+					return udpBackend.LocalAddr().String()
+				}())
+				if e == nil {
+					c.SetDeadline(time.Now().Add(time.Second))
+					_, e = c.Write([]byte("subnet-probe"))
+					if e == nil {
+						b := make([]byte, 12)
+						_, e = io.ReadFull(c, b)
+						if e == nil && string(b) != "subnet-probe" {
+							t.Fatalf("bad echo %q", b)
+						}
+					}
+					c.Close()
+				}
+				if e == nil {
+					return
+				}
+				last = e
+				time.Sleep(100 * time.Millisecond)
+			}
+			t.Fatal(last)
+		})
+	}
+	t.Run("mihomo_magic_dns", func(t *testing.T) {
+		resolver := mdns.NewResolver(mdns.Config{Main: []mdns.NameServer{{Net: "tailscale", Addr: cfg.Name}}})
+		q := new(D.Msg)
+		q.SetQuestion("probe-peer.probe.ts.net.", D.TypeA)
+		answer, err := resolver.ExchangeContext(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peer4, _ := peer.TailscaleIPs()
+		for _, rr := range answer.Answer {
+			if a, ok := rr.(*D.A); ok && a.A.String() == peer4.String() {
+				return
+			}
+		}
+		t.Fatalf("no peer A record: %v", answer)
+	})
+	t.Run("icmp", func(t *testing.T) {
+		result, err := pc.Ping(ctx, netip.MustParseAddr("192.0.2.1"), tailcfg.PingICMP)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Err != "" {
+			t.Fatal(result.Err)
+		}
+	})
+	t.Run("exclusive_state", func(t *testing.T) {
+		other, err := Start(cfg)
+		if err == nil {
+			other.Close()
+			t.Fatal("duplicate state accepted")
+		}
+	})
+
+	t.Run("unchanged_reload", func(t *testing.T) {
+		active = gateway
+		defer func() { active = nil }()
+		before := gateway.backend
+		if err := Apply(cfg); err != nil {
+			t.Fatal(err)
+		}
+		if active.backend != before {
+			t.Fatal("reload restarted tailnet")
+		}
+		changed := cfg
+		changed.Hostname = "changed"
+		if _, err := Normalize(changed); err == nil {
+			t.Fatal("identity change accepted without restart")
+		}
+	})
+
+	t.Run("shipping_binary_dns_traffic_and_shutdown", func(t *testing.T) {
+		// Native route managers share OS routing tables; replace, never overlap.
+		gateway.Close()
+		cli := cfg
+		cli.Hostname = "native-cli"
+		cli.Interface = "tailcli0"
+		cli.StateDir = "state"
+		cli.Port = 0
+		home := t.TempDir()
+		packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := packet.LocalAddr().String()
+		packet.Close()
+		doc := map[string]any{"tailnet": cli, "dns": map[string]any{"enable": true, "listen": addr, "nameserver": []string{"tailscale://" + cli.Name}, "default-nameserver": []string{"127.0.0.1"}}}
+		data, _ := json.Marshal(doc)
+		file := filepath.Join(home, "config.json")
+		if err = os.WriteFile(file, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("/test/mihomo", "-d", home, "-f", file)
+		var logs bytes.Buffer
+		cmd.Stdout = &logs
+		cmd.Stderr = &logs
+		if err = cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		stopped := false
+		defer func() {
+			if !stopped {
+				cmd.Process.Kill()
+				cmd.Wait()
+			}
+		}()
+		q := new(D.Msg)
+		q.SetQuestion("probe-peer.probe.ts.net.", D.TypeA)
+		client := &D.Client{Timeout: time.Second}
+		ready := false
+		for i := 0; i < 30; i++ {
+			response, _, err := client.Exchange(q, addr)
+			if err == nil && len(response.Answer) > 0 {
+				ready = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !ready {
+			cmd.Process.Kill()
+			cmd.Wait()
+			stopped = true
+			t.Fatalf("shipping DNS not ready: %s", logs.String())
+		}
+		q.SetQuestion("native-cli.probe.ts.net.", D.TypeA)
+		response, _, err := client.Exchange(q, addr)
+		if err != nil || len(response.Answer) == 0 {
+			t.Fatalf("shipping node DNS: %v %v", response, err)
+		}
+		cliIP := netip.MustParseAddr(response.Answer[0].(*D.A).A.String())
+		for _, kind := range []tailcfg.PingType{tailcfg.PingTSMP, tailcfg.PingICMP} {
+			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			result, err := pc.Ping(pingCtx, cliIP, kind)
+			cancel()
+			if err != nil || result.Err != "" {
+				cmd.Process.Kill()
+				cmd.Wait()
+				stopped = true
+				t.Fatalf("shipping %s: %v %v\n%s", kind, result, err, logs.String())
+			}
+		}
+		cmd.Process.Signal(syscall.SIGTERM)
+		err = cmd.Wait()
+		stopped = true
+		if err != nil {
+			t.Fatalf("shutdown: %v %s", err, logs.String())
+		}
+		if _, err = net.InterfaceByName(cli.Interface); err == nil {
+			t.Fatal("shipping TUN leaked")
+		}
+	})
+
+	t.Run("restart_identity_cleanup", func(t *testing.T) {
+		key := status.Self.PublicKey
+		gateway.Close()
+		gateway.Close()
+		if _, err := net.InterfaceByName(cfg.Interface); err == nil {
+			t.Fatal("TUN remains after close")
+		}
+		again, err := Start(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer again.Close()
+		until := time.Now().Add(20 * time.Second)
+		for again.backend.State() != ipn.Running {
+			if time.Now().After(until) {
+				t.Fatal("restart not running")
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if again.backend.Status().Self.PublicKey != key {
+			t.Fatal("node identity changed")
+		}
+		b, err := exec.Command("ip", "route", "show", "table", "52").CombinedOutput()
+		if err != nil {
+			t.Fatalf("routes: %s %v", b, err)
+		}
+		t.Logf("native table 52: %s", b)
+	})
+
+}

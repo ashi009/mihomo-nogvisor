@@ -1,0 +1,38 @@
+--- a/config/config.go
++++ b/config/config.go
+@@ -3,6 +3,7 @@
+ import (
+ 	"errors"
+ 	"fmt"
++	"github.com/metacubex/mihomo/component/tailnet"
+ 	"net"
+ 	"net/netip"
+ 	"net/url"
+@@ -199,6 +200,7 @@
+ 
+ // Config is mihomo config manager
+ type Config struct {
++	Tailnet       tailnet.Config
+ 	General       *General
+ 	Controller    *Controller
+ 	Experimental  *Experimental
+@@ -404,6 +406,7 @@
+ }
+ 
+ type RawConfig struct {
++	Tailnet                       tailnet.Config          `yaml:"tailnet"`
+ 	Port                          int                     `yaml:"port" json:"port"`
+ 	SocksPort                     int                     `yaml:"socks-port" json:"socks-port"`
+ 	RedirPort                     int                     `yaml:"redir-port" json:"redir-port"`
+@@ -632,6 +635,11 @@
+ 
+ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
+ 	config := &Config{}
++	tc, err := tailnet.Normalize(rawCfg.Tailnet)
++	if err != nil {
++		return nil, err
++	}
++	config.Tailnet = tc
+ 	log.Infoln("Start initial configuration in progress") //Segment finished in xxm
+ 	startTime := time.Now()
+ 

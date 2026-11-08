@@ -1,0 +1,15 @@
+diff --git a/net/tstun/wrap.go b/net/tstun/wrap.go
+--- a/net/tstun/wrap.go
++++ b/net/tstun/wrap.go
+@@ -1074,8 +1074,10 @@
+ // offloading still expects a partial checksum.
+ // TODO(jwhited): plumb partial checksum awareness into net/packet/checksum.
+ func invertGSOChecksum(pkt []byte, gso netstack_GSO) {
+ 	if !buildfeatures.HasNetstack {
+-		panic("unreachable")
++		// Native injected packets (including TSMP) have no GSO metadata.
++		// injectedRead still calls this helper for those packets.
++		return
+ 	}
+ 	if gso.NeedsCsum != true {
+ 		return
