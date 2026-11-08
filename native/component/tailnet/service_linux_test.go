@@ -223,7 +223,7 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		}
 		addr := packet.LocalAddr().String()
 		packet.Close()
-		doc := map[string]any{"tailnet": cli, "dns": map[string]any{"enable": true, "listen": addr, "nameserver": []string{"tailscale://" + cli.Name}, "default-nameserver": []string{"127.0.0.1"}}}
+		doc := map[string]any{"log-level": "debug", "tailnet": cli, "dns": map[string]any{"enable": true, "listen": addr, "nameserver": []string{"tailscale://" + cli.Name}, "default-nameserver": []string{"127.0.0.1"}}}
 		data, _ := json.Marshal(doc)
 		file := filepath.Join(home, "config.json")
 		if err = os.WriteFile(file, data, 0600); err != nil {
@@ -247,7 +247,7 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		q.SetQuestion("probe-peer.probe.ts.net.", D.TypeA)
 		client := &D.Client{Timeout: time.Second}
 		ready := false
-		for i := 0; i < 30; i++ {
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
 			response, _, err := client.Exchange(q, addr)
 			if err == nil && len(response.Answer) > 0 {
 				ready = true
@@ -268,14 +268,22 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		}
 		cliIP := netip.MustParseAddr(response.Answer[0].(*D.A).A.String())
 		for _, kind := range []tailcfg.PingType{tailcfg.PingTSMP, tailcfg.PingICMP} {
-			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			result, err := pc.Ping(pingCtx, cliIP, kind)
-			cancel()
-			if err != nil || result.Err != "" {
-				cmd.Process.Kill()
-				cmd.Wait()
-				stopped = true
-				t.Fatalf("shipping %s: %v %v\n%s", kind, result, err, logs.String())
+			// DNS can arrive before the peer map and WireGuard handshake.
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				pingCtx, cancel := context.WithTimeout(ctx, time.Second)
+				result, err := pc.Ping(pingCtx, cliIP, kind)
+				cancel()
+				if err == nil && result.Err == "" {
+					break
+				}
+				if time.Now().After(deadline) || ctx.Err() != nil {
+					cmd.Process.Kill()
+					cmd.Wait()
+					stopped = true
+					t.Fatalf("shipping %s: %v %v\n%s", kind, result, err, logs.String())
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 		cmd.Process.Kill()
@@ -303,7 +311,7 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		}
 		stopped = false
 		ready = false
-		for i := 0; i < 50; i++ {
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
 			response, _, err = client.Exchange(q, addr)
 			if err == nil && len(response.Answer) > 0 {
 				ready = response.Answer[0].(*D.A).A.String() == cliIP.String()
