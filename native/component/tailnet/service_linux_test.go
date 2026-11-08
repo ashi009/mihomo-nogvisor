@@ -4,10 +4,13 @@ package tailnet
 
 import (
 	"context"
+	"github.com/metacubex/mihomo/component/resolver"
 	"io"
 	"net"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,21 +18,21 @@ import (
 	"encoding/json"
 	C "github.com/metacubex/mihomo/constant"
 	mdns "github.com/metacubex/mihomo/dns"
-	"github.com/metacubex/tailscale/derp/derpserver"
-	"github.com/metacubex/tailscale/ipn"
-	"github.com/metacubex/tailscale/net/netns"
-	"github.com/metacubex/tailscale/net/stun/stuntest"
-	"github.com/metacubex/tailscale/tailcfg"
-	"github.com/metacubex/tailscale/tsnet"
-	"github.com/metacubex/tailscale/tstest/integration/testcontrol"
-	"github.com/metacubex/tailscale/types/key"
-	"github.com/metacubex/tailscale/types/logger"
-	"github.com/metacubex/tailscale/types/nettype"
 	D "github.com/miekg/dns"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"tailscale.com/derp/derpserver"
+	"tailscale.com/ipn"
+	"tailscale.com/net/netns"
+	"tailscale.com/net/stun/stuntest"
+	"tailscale.com/tailcfg"
+	"tailscale.com/tsnet"
+	"tailscale.com/tstest/integration/testcontrol"
+	"tailscale.com/types/key"
+	"tailscale.com/types/logger"
+	"tailscale.com/types/nettype"
 )
 
 // This probe uses only a disposable local control plane, local DERP/STUN,
@@ -53,6 +56,28 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 	control.HTTPTestServer = httptest.NewServer(control)
 	defer control.HTTPTestServer.Close()
 	C.SetHomeDir(t.TempDir())
+	// Only Mihomo's bootstrap resolver knows this control-plane hostname.
+	bootstrap, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bootstrapQueries atomic.Int32
+	bootstrapDNS := &D.Server{PacketConn: bootstrap, Handler: D.HandlerFunc(func(w D.ResponseWriter, q *D.Msg) {
+		response := new(D.Msg)
+		response.SetReply(q)
+		if len(q.Question) == 1 && q.Question[0].Name == "control.native.test." {
+			bootstrapQueries.Add(1)
+			if q.Question[0].Qtype == D.TypeA {
+				response.Answer = []D.RR{&D.A{Hdr: D.RR_Header{Name: q.Question[0].Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: 1}, A: net.IPv4(127, 0, 0, 1)}}
+			}
+		}
+		w.WriteMsg(response)
+	})}
+	go bootstrapDNS.ActivateAndServe()
+	defer bootstrapDNS.Shutdown()
+	previousResolver := resolver.ProxyServerHostResolver
+	resolver.ProxyServerHostResolver = mdns.NewResolver(mdns.Config{Main: []mdns.NameServer{{Net: "udp", Addr: bootstrap.LocalAddr().String()}}})
+	defer func() { resolver.ProxyServerHostResolver = previousResolver }()
 	raw, err := os.ReadFile("/test/config.json")
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +89,7 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := input.Tailnet
-	cfg.ControlURL = control.HTTPTestServer.URL
+	cfg.ControlURL = strings.Replace(control.HTTPTestServer.URL, "127.0.0.1", "control.native.test", 1)
 	cfg.StateDir = t.TempDir()
 	gateway, err := Start(cfg)
 	if err != nil {
@@ -77,6 +102,9 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 			t.Fatal("native backend not running")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if bootstrapQueries.Load() == 0 {
+		t.Fatal("control plane bypassed Mihomo bootstrap DNS")
 	}
 	status := gateway.backend.Status()
 	prefix := cfg.AdvertiseRoutes[0]
@@ -223,7 +251,7 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		}
 		addr := packet.LocalAddr().String()
 		packet.Close()
-		doc := map[string]any{"log-level": "debug", "tailnet": cli, "dns": map[string]any{"enable": true, "listen": addr, "nameserver": []string{"tailscale://" + cli.Name}, "default-nameserver": []string{"127.0.0.1"}}}
+		doc := map[string]any{"log-level": "debug", "tailnet": cli, "dns": map[string]any{"enable": true, "listen": addr, "nameserver": []string{"tailscale://" + cli.Name}, "default-nameserver": []string{"127.0.0.1"}, "proxy-server-nameserver": []string{bootstrap.LocalAddr().String()}}}
 		data, _ := json.Marshal(doc)
 		file := filepath.Join(home, "config.json")
 		if err = os.WriteFile(file, data, 0600); err != nil {

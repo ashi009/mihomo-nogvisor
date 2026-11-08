@@ -36,7 +36,8 @@ class UpstreamTests(unittest.TestCase):
     def test_dependency_and_patch_impact_with_linked_highlights(self):
         old, new = 'a'*40, 'b'*40
         pin = {'repository': 'vernesong/mihomo', 'branch': 'Alpha', 'revision': old,
-               'dependencies': {'github.com/metacubex/sing-tun': 'v0.4.21'}}
+               'dependencies': {'github.com/metacubex/sing-tun': 'v0.4.21'},
+               'native_dependencies': {'tailscale.com': 'v1.102.3'}}
         commits = [commit(1, 'fix: Smart deadlock'), commit(2, 'fix: DNS routing'), commit(3, 'Merge upstream')]
         updated, path, report, body, branch = u.render(pin, {'sha': new},
             {'files': [{'filename': 'main.go'}]}, commits,
@@ -44,6 +45,7 @@ class UpstreamTests(unittest.TestCase):
         self.assertEqual(updated['revision'], new)
         self.assertEqual(updated['dependencies']['github.com/metacubex/sing-tun'], 'v0.4.29')
         self.assertEqual(pin['revision'], old)
+        self.assertEqual(updated['native_dependencies'], {'tailscale.com': 'v1.102.3'})
         self.assertIn('Smart policy: fix: Smart deadlock', body)
         self.assertIn('DNS and routing: fix: DNS routing', body)
         self.assertIn('`main.go`', body)

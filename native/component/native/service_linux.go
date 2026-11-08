@@ -12,11 +12,11 @@ import (
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/nftables"
-	"github.com/metacubex/tailscale/wgengine/router"
-	_ "github.com/metacubex/tailscale/wgengine/router/osrouter"
 	"github.com/sagernet/netlink"
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
+	"tailscale.com/wgengine/router"
+	_ "tailscale.com/wgengine/router/osrouter"
 )
 
 // Lock is shared by supervised startup and offline cleanup. Cleanup must never

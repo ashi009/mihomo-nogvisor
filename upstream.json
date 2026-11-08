@@ -3,7 +3,9 @@
   "branch": "Alpha",
   "revision": "96feb2a175eb65b05ae2a60d222a279f90990695",
   "dependencies": {
-    "github.com/metacubex/tailscale": "v0.0.0-20260821153257-ff0ecd818181",
     "github.com/metacubex/sing-tun": "v0.4.29"
+  },
+  "native_dependencies": {
+    "tailscale.com": "v1.102.3"
   }
 }

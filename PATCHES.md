@@ -14,14 +14,13 @@ our backend in `native/component/tailnet`, and apply independent patches last:
 `patches/sing-tun/0001-capture-policy.patch` adds hooks to the pinned sing-tun.
 The policy implementation is owned code in `native/sing-tun`, copied
 into the disposable dependency tree by `prepare-sing-tun.sh`. Both dependency
-queues use local module replacements; restored upstream packages are carried
-as explicit patches rather than a checked-in source tree.
+queues use local module replacements against clean upstream modules.
 
 `git apply` fails on conflicting upstream changes. There is no copied upstream
 source tree to maintain. The legacy ShellCrash release is manual-only;
 native PR checks upload candidate artifacts without deploying to routers.
 
-Prepare a new directory, then build (Go 1.26.5):
+Prepare a new directory, then build (Go 1.26.10):
 
     source=$(scripts/prepare-native.sh /tmp/mihomo-native-work)
     scripts/build-native.sh "$source" /tmp/mihomo-native
@@ -37,7 +36,7 @@ ordinary owned Go code, rather than a patch against Tailscale internals.
 Actions or with `gh workflow run upstream.yml --repo ashi009/mihomo-nogvisor`.
 Dot can use the same trigger when an update is wanted. It resolves vernesong's
 Alpha branch to an immutable SHA, carries
-forward the Tailscale and sing-tun versions from that revision's go.mod, and
+forward the sing-tun version from that revision's go.mod, and
 opens a draft PR. It never merges or deploys automatically. While an upstream
 PR remains open, subsequent runs leave its branch and any manual patch rebases
 untouched. A closed PR suppresses another proposal for that same revision.
@@ -61,29 +60,36 @@ the upstream and local patch revision in their version string. The workflow
 reports stripped ARM64 and gzip sizes in the run summary and uploads both
 artifacts, size.json, size.md, version, checksums and test logs.
 
-The Tailscale dependency queue is maintained separately in `patches/tailscale/`.
-`prepare-tailscale.sh` copies the pinned module into the disposable build
-directory, applies that queue, and adds a local module replacement. The shared
-module cache stays unchanged. The fix lets native injected packets pass the
-GSO checksum helper when netstack is omitted; the original helper panicked on
-TSMP traffic. It is covered by traffic tests against the shipping executable.
+The native backend uses official `tailscale.com` v1.102.3, pinned independently
+in `upstream.json` under `native_dependencies`. Mihomo update proposals preserve
+this pin; changing official Tailscale requires updating it and validating its
+patch queue independently. The MetaCubeX Tailscale requirement in Mihomo's
+upstream go.mod is not a native runtime dependency.
 
-The ff0ecd818181 update removed native OS routing and test infrastructure.
-`0002-native-os-router.patch` restores osrouter and linuxfw from a487011f6b1e,
-immediately before the pruning commit. `0003-test-helpers.patch` restores
-local control/DERP/STUN helpers and their missing imports from the previous
-1ab893d4162c pin. They remain separate from the injected-packet fix. To verify these imports against their source, compare
-the added files with their respective source archives. The native backend now
-sets bootstrap DNS through `System.LookupHook`, matching the new API.
+`prepare-tailscale.sh` copies the official module into a disposable directory,
+applies the two patches in `patches/tailscale/`, and installs a local go.mod
+replacement. The shared module cache stays unchanged:
 
-The Tailscale fork removed native TUN creation. We restore that through a pinned
-native TUN dependency and an event adapter. Its otherwise-unused Linux router
-code requires Go 1.26 language mode despite the fork's Go 1.20 module directive;
-`build-native.sh` applies that override narrowly. No gVisor is linked in the
-native executable. Build tags are explicit in `scripts/native-tags`. The upstream
-`no_easytier` and `no_zerotier` tags omit those unused overlay protocols;
-configurations requesting them fail explicitly. MIPS remains available,
-while the native Jsonnet target continues to select `system`.
+- `0001-native-injected-packets.patch`: lets native injected packets pass the
+  checksum helper when netstack is omitted; covered by TSMP traffic against the
+  shipping executable.
+- `0002-embedding-dns.patch`: ports MetaCubeX/tailscale
+  ab8269766d9e62deebd7320368c9b567e6fb6b63 with canonical module imports. It routes
+  bootstrap lookups through the embedding application's resolver and preserves
+  the upstream hook tests. The original author's identity is retained.
+
+Official Tailscale provides the OS router, native WireGuard TUN and test helpers.
+No source-restoration patches or event adapter are needed. CI uses Go 1.26.10;
+the dependency requires Go 1.26.6 or newer. There is no language override or vet
+exception. Backend imports use `tailscale.com/...`, and WireGuard uses the
+version selected by that module.
+
+Build tags in `scripts/native-tags` preserve the previous exclusions, including
+metrics and Linux desktop DNS integration. No gVisor, tsnet or MetaCubeX
+Tailscale package is linked in the native executable. The upstream `no_easytier`
+and `no_zerotier` tags omit those overlay protocols; configurations requesting
+them fail explicitly. MIPS remains available, while the native Jsonnet target
+continues to select `system`.
 
 ## Configuration
 
@@ -177,8 +183,11 @@ On the ARM64 Docker Linux VM, using disposable local control/DERP/STUN services:
 
 This rebuilds the native executable and a separate test executable. gVisor is
 included only in the test executable for the peer, never in the shipping one.
-Test helpers need a language override and vet exception because the fork's
-unused test sources exceed its declared language version.
+The peer uses official tsnet; `no_tailscale` excludes Mihomo's separate forked
+Tailscale outbound while compiling that test executable. The control-plane
+hostname exists only in the fixture's DNS server, so successful enrollment
+checks the Mihomo bootstrap resolver hook. Unit tests also check that hook
+errors do not fall back to other resolvers.
 
 Passed: native TUN creation, TCP/UDP and ICMP to an advertised address, MagicDNS
 through Mihomo, exclusive state access, restart identity, unchanged reload,

@@ -1,4 +1,4 @@
-From 505a0fdfa1bfcdcea9452d02b3ccad70c553431a Mon Sep 17 00:00:00 2001
+From a1b0d50874a6b91160930291ef2ddbe404bdaee7 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:52:16 +0800
 Subject: [PATCH] 0001-native-injected-packets
@@ -8,7 +8,7 @@ Subject: [PATCH] 0001-native-injected-packets
  1 file changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/net/tstun/wrap.go b/net/tstun/wrap.go
-index afdb57c..f8ce465 100644
+index e63dccd..8936f97 100644
 --- a/net/tstun/wrap.go
 +++ b/net/tstun/wrap.go
 @@ -983,7 +983,9 @@ func stackGSOToTunGSO(pkt []byte, gso netstack_GSO) (tun.GSOOptions, error) {

@@ -17,24 +17,23 @@ import (
 	"sync"
 
 	mdns "github.com/metacubex/mihomo/dns"
-	forktun "github.com/metacubex/tailscale-wireguard-go/tun"
-	"github.com/metacubex/tailscale/control/controlclient"
-	"github.com/metacubex/tailscale/envknob"
-	"github.com/metacubex/tailscale/ipn"
-	"github.com/metacubex/tailscale/ipn/ipnlocal"
-	"github.com/metacubex/tailscale/ipn/store"
-	"github.com/metacubex/tailscale/net/netmon"
-	"github.com/metacubex/tailscale/net/tsdial"
-	"github.com/metacubex/tailscale/tsd"
-	"github.com/metacubex/tailscale/types/logid"
-	"github.com/metacubex/tailscale/util/eventbus"
-	"github.com/metacubex/tailscale/wgengine"
-	"github.com/metacubex/tailscale/wgengine/router"
-	_ "github.com/metacubex/tailscale/wgengine/router/osrouter"
 	D "github.com/miekg/dns"
 	nativetun "github.com/tailscale/wireguard-go/tun"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
+	"tailscale.com/control/controlclient"
+	"tailscale.com/envknob"
+	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnlocal"
+	"tailscale.com/ipn/store"
+	"tailscale.com/net/netmon"
+	"tailscale.com/net/tsdial"
+	"tailscale.com/tsd"
+	"tailscale.com/types/logid"
+	"tailscale.com/util/eventbus"
+	"tailscale.com/wgengine"
+	"tailscale.com/wgengine/router"
+	_ "tailscale.com/wgengine/router/osrouter"
 )
 
 type Config struct {
@@ -199,21 +198,10 @@ func Start(c Config) (service *Service, retErr error) {
 	dialer.SetBus(sys.Bus.Get())
 	sys.Set(dialer)
 	add(func() { dialer.Close() })
-	native, err := nativetun.CreateTUN(c.Interface, 1280)
+	dev, err := nativetun.CreateTUN(c.Interface, 1280)
 	if err != nil {
 		return nil, err
 	}
-	dev := &nativeTUN{Device: native, events: make(chan forktun.Event, 16), done: make(chan struct{})}
-	go func() {
-		defer close(dev.events)
-		for event := range native.Events() {
-			select {
-			case dev.events <- forktun.Event(event):
-			case <-dev.done:
-				return
-			}
-		}
-	}()
 	r, err := router.New(logf, dev, nm, sys.HealthTracker.Get(), sys.Bus.Get())
 	if err != nil {
 		dev.Close()
@@ -302,19 +290,4 @@ func (d nativeDNS) ExchangeContext(ctx context.Context, q *D.Msg) (*D.Msg, error
 	}
 	response.Id = q.Id
 	return response, nil
-}
-
-type nativeTUN struct {
-	nativetun.Device
-	events    chan forktun.Event
-	done      chan struct{}
-	closeOnce sync.Once
-	closeErr  error
-}
-
-func (d *nativeTUN) Events() <-chan forktun.Event { return d.events }
-
-func (d *nativeTUN) Close() error {
-	d.closeOnce.Do(func() { close(d.done); d.closeErr = d.Device.Close() })
-	return d.closeErr
 }
