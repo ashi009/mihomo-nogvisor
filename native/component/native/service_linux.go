@@ -108,7 +108,7 @@ func Cleanup(path string) error {
 			name = "tailscale0"
 		}
 		router.CleanUp(func(f string, a ...any) { log.Debugln("[Native cleanup] "+f, a...) }, nil, name)
-		// The upstream cleanup entry point removes firewall rules only.
+		// Upstream cleanup does not remove the policy routing rules.
 		// Linux deletes interface routes when the TUN closes; remove its exact
 		// standard policy rules too, without touching other owners' priorities.
 		rules, err := netlink.RuleList(netlink.FAMILY_ALL)

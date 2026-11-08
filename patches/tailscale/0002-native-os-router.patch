@@ -1,43 +1,43 @@
-From 50cc940c9bd8f5553687c2f94eae396c660d6e2b Mon Sep 17 00:00:00 2001
+From fbc26e9f2701406cec48b6e82cf2a08a2c409d8b Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:55:11 +0800
 Subject: [PATCH] router: restore native OS routing support
 
 The MetaCubeX update removes osrouter and linuxfw, but the native
 backend needs their kernel route and firewall implementation. Restore
-the packages from 1ab893d4162c as an independent patch.
+the packages from a487011f6b1e, immediately before the pruning commit.
 ---
  util/linuxfw/detector.go                      |  158 ++
  util/linuxfw/fake.go                          |  143 +
- util/linuxfw/fake_netfilter.go                |   99 +
+ util/linuxfw/fake_netfilter.go                |  109 +
  util/linuxfw/helpers.go                       |   39 +
  util/linuxfw/iptables.go                      |  233 ++
  util/linuxfw/iptables_disabled.go             |   20 +
  util/linuxfw/iptables_for_svcs.go             |  127 +
- util/linuxfw/iptables_for_svcs_test.go        |  330 +++
- util/linuxfw/iptables_runner.go               |  764 ++++++
- util/linuxfw/iptables_runner_test.go          |  558 ++++
- util/linuxfw/linuxfw.go                       |  190 ++
+ util/linuxfw/iptables_for_svcs_test.go        |  329 +++
+ util/linuxfw/iptables_runner.go               |  791 ++++++
+ util/linuxfw/iptables_runner_test.go          |  592 ++++
+ util/linuxfw/linuxfw.go                       |  200 ++
  util/linuxfw/nftables.go                      |  296 ++
- util/linuxfw/nftables_for_svcs.go             |  309 +++
- util/linuxfw/nftables_for_svcs_test.go        |  318 +++
- util/linuxfw/nftables_runner.go               | 2443 +++++++++++++++++
- util/linuxfw/nftables_runner_test.go          | 1424 ++++++++++
+ util/linuxfw/nftables_for_svcs.go             |  309 ++
+ util/linuxfw/nftables_for_svcs_test.go        |  317 +++
+ util/linuxfw/nftables_runner.go               | 2488 +++++++++++++++++
+ util/linuxfw/nftables_runner_test.go          | 1423 ++++++++++
  util/linuxfw/nftables_types.go                |   95 +
  wgengine/router/osrouter/ifconfig_windows.go  |  834 ++++++
- .../router/osrouter/ifconfig_windows_test.go  |  242 ++
+ .../router/osrouter/ifconfig_windows_test.go  |  240 ++
  wgengine/router/osrouter/osrouter.go          |   15 +
- wgengine/router/osrouter/osrouter_test.go     |   17 +
+ wgengine/router/osrouter/osrouter_test.go     |   15 +
  wgengine/router/osrouter/router_freebsd.go    |   27 +
- wgengine/router/osrouter/router_linux.go      | 1734 ++++++++++++
- wgengine/router/osrouter/router_linux_test.go | 1554 +++++++++++
+ wgengine/router/osrouter/router_linux.go      | 2023 ++++++++++++++
+ wgengine/router/osrouter/router_linux_test.go | 2114 ++++++++++++++
  wgengine/router/osrouter/router_openbsd.go    |  284 ++
- wgengine/router/osrouter/router_plan9.go      |  155 ++
+ wgengine/router/osrouter/router_plan9.go      |  155 +
  .../router/osrouter/router_userspace_bsd.go   |  211 ++
  wgengine/router/osrouter/router_windows.go    |  397 +++
- .../router/osrouter/router_windows_test.go    |   21 +
+ .../router/osrouter/router_windows_test.go    |   19 +
  wgengine/router/osrouter/runner.go            |  115 +
- 30 files changed, 13152 insertions(+)
+ 30 files changed, 14118 insertions(+)
  create mode 100644 util/linuxfw/detector.go
  create mode 100644 util/linuxfw/fake.go
  create mode 100644 util/linuxfw/fake_netfilter.go
@@ -235,7 +235,7 @@ index 0000000..86c4a1b
 +}
 diff --git a/util/linuxfw/fake.go b/util/linuxfw/fake.go
 new file mode 100644
-index 0000000..9580aee
+index 0000000..b902b93
 --- /dev/null
 +++ b/util/linuxfw/fake.go
 @@ -0,0 +1,143 @@
@@ -249,8 +249,8 @@ index 0000000..9580aee
 +import (
 +	"errors"
 +	"fmt"
-+	slices "github.com/metacubex/tailscale/util/go120/slices"
 +	"os"
++	"slices"
 +	"strconv"
 +	"strings"
 +)
@@ -384,10 +384,10 @@ index 0000000..9580aee
 +}
 diff --git a/util/linuxfw/fake_netfilter.go b/util/linuxfw/fake_netfilter.go
 new file mode 100644
-index 0000000..58b8aa3
+index 0000000..caaf879
 --- /dev/null
 +++ b/util/linuxfw/fake_netfilter.go
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,109 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -409,6 +409,8 @@ index 0000000..58b8aa3
 +		TailscaleServiceIP netip.Addr
 +		ClusterIP          netip.Addr
 +	}
++	// clampedAddrs tracks addresses passed to ClampMSSToPMTU.
++	clampedAddrs []netip.Addr
 +}
 +
 +// NewFakeNetfilterRunner creates a new FakeNetfilterRunner.
@@ -473,9 +475,17 @@ index 0000000..58b8aa3
 +}
 +func (f *FakeNetfilterRunner) EnsureSNATForDst(src, dst netip.Addr) error               { return nil }
 +func (f *FakeNetfilterRunner) DNATNonTailscaleTraffic(tun string, dst netip.Addr) error { return nil }
-+func (f *FakeNetfilterRunner) ClampMSSToPMTU(tun string, addr netip.Addr) error         { return nil }
-+func (f *FakeNetfilterRunner) AddMagicsockPortRule(port uint16, network string) error   { return nil }
-+func (f *FakeNetfilterRunner) DelMagicsockPortRule(port uint16, network string) error   { return nil }
++func (f *FakeNetfilterRunner) ClampMSSToPMTU(tun string, addr netip.Addr) error {
++	f.clampedAddrs = append(f.clampedAddrs, addr)
++	return nil
++}
++
++// GetClampedAddrs returns the addresses passed to ClampMSSToPMTU.
++func (f *FakeNetfilterRunner) GetClampedAddrs() []netip.Addr {
++	return f.clampedAddrs
++}
++func (f *FakeNetfilterRunner) AddMagicsockPortRule(port uint16, network string) error { return nil }
++func (f *FakeNetfilterRunner) DelMagicsockPortRule(port uint16, network string) error { return nil }
 +func (f *FakeNetfilterRunner) DeletePortMapRuleForSvc(svc, tun string, targetIP netip.Addr, pm PortMap) error {
 +	return nil
 +}
@@ -534,7 +544,7 @@ index 0000000..bd9a698
 +}
 diff --git a/util/linuxfw/iptables.go b/util/linuxfw/iptables.go
 new file mode 100644
-index 0000000..4c05bfe
+index 0000000..1808cf2
 --- /dev/null
 +++ b/util/linuxfw/iptables.go
 @@ -0,0 +1,233 @@
@@ -554,9 +564,9 @@ index 0000000..4c05bfe
 +	"strings"
 +	"unicode"
 +
++	"github.com/coreos/go-iptables/iptables"
 +	"github.com/metacubex/tailscale/types/logger"
 +	"github.com/metacubex/tailscale/version/distro"
-+	"github.com/coreos/go-iptables/iptables"
 +)
 +
 +func init() {
@@ -932,15 +942,14 @@ index 0000000..acc2baf
 +}
 diff --git a/util/linuxfw/iptables_for_svcs_test.go b/util/linuxfw/iptables_for_svcs_test.go
 new file mode 100644
-index 0000000..307a8be
+index 0000000..b4dfe19
 --- /dev/null
 +++ b/util/linuxfw/iptables_for_svcs_test.go
-@@ -0,0 +1,330 @@
-+//go:build ignore
-+
+@@ -0,0 +1,329 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
++//go:build linux
 +
 +package linuxfw
 +
@@ -1268,10 +1277,10 @@ index 0000000..307a8be
 +}
 diff --git a/util/linuxfw/iptables_runner.go b/util/linuxfw/iptables_runner.go
 new file mode 100644
-index 0000000..3f19f6f
+index 0000000..6cc4a6a
 --- /dev/null
 +++ b/util/linuxfw/iptables_runner.go
-@@ -0,0 +1,764 @@
+@@ -0,0 +1,791 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -1281,10 +1290,10 @@ index 0000000..3f19f6f
 +
 +import (
 +	"fmt"
-+	slices "github.com/metacubex/tailscale/util/go120/slices"
 +	"log"
 +	"net/netip"
 +	"os/exec"
++	"slices"
 +	"strconv"
 +	"strings"
 +
@@ -1369,9 +1378,21 @@ index 0000000..3f19f6f
 +}
 +
 +// DelLoopbackRule removes the iptables rule permitting loopback
-+// traffic to a Tailscale IP.
++// traffic to a Tailscale IP. A missing rule is not an error: an address
++// left on the interface by a previous tailscaled instance never went
++// through AddLoopbackRule in this one, so removing it must not be
++// blocked by the absence of its loopback rule.
 +func (i *iptablesRunner) DelLoopbackRule(addr netip.Addr) error {
-+	if err := i.getIPTByAddr(addr).Delete("filter", "ts-input", "-i", "lo", "-s", addr.String(), "-j", "ACCEPT"); err != nil {
++	ipt := i.getIPTByAddr(addr)
++	args := []string{"-i", "lo", "-s", addr.String(), "-j", "ACCEPT"}
++	exists, err := ipt.Exists("filter", "ts-input", args...)
++	if err != nil {
++		return fmt.Errorf("checking loopback allow rule for %q: %w", addr, err)
++	}
++	if !exists {
++		return nil
++	}
++	if err := ipt.Delete("filter", "ts-input", args...); err != nil {
 +		return fmt.Errorf("deleting loopback allow rule for %q: %w", addr, err)
 +	}
 +
@@ -1596,7 +1617,16 @@ index 0000000..3f19f6f
 +
 +func (i *iptablesRunner) ClampMSSToPMTU(tun string, addr netip.Addr) error {
 +	table := i.getIPTByAddr(addr)
-+	return table.Append("mangle", "FORWARD", "-o", tun, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu")
++	// Clamp MSS on forwarded TCP handshakes in both directions: the SYN
++	// leaving via tun towards the tailnet peer, and the SYN-ACK arriving on
++	// tun and being forwarded back out towards the originating endpoint. A
++	// single -o tun rule only clamps one side of the handshake, leaving the
++	// endpoint on the other side advertising an MSS that is too large for the
++	// tun MTU, which black-holes large segments when PMTU discovery is broken.
++	if err := table.Append("mangle", "FORWARD", "-o", tun, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"); err != nil {
++		return err
++	}
++	return table.Append("mangle", "FORWARD", "-i", tun, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu")
 +}
 +
 +// addBase6 adds some basic IPv6 processing rules to be
@@ -1810,10 +1840,14 @@ index 0000000..3f19f6f
 +
 +	// mangle/PREROUTING: Restore mark from conntrack for ESTABLISHED/RELATED connections
 +	// This runs BEFORE routing decision and rp_filter check
++	// The connmark check ensures we only restore when Tailscale has marked the connection,
++	// preventing us from wiping mark bits set by other systems when ct mark is zero.
 +	for _, ipt := range i.getTables() {
 +		args := []string{
 +			"-m", "conntrack",
 +			"--ctstate", "ESTABLISHED,RELATED",
++			"-m", "connmark",
++			"!", "--mark", "0x0/" + fwmarkMask, // Only restore if ct mark has Tailscale bits set
 +			"-j", "CONNMARK",
 +			"--restore-mark",
 +			"--nfmask", fwmarkMask,
@@ -1851,6 +1885,8 @@ index 0000000..3f19f6f
 +		args := []string{
 +			"-m", "conntrack",
 +			"--ctstate", "ESTABLISHED,RELATED",
++			"-m", "connmark",
++			"!", "--mark", "0x0/" + fwmarkMask,
 +			"-j", "CONNMARK",
 +			"--restore-mark",
 +			"--nfmask", fwmarkMask,
@@ -2038,15 +2074,14 @@ index 0000000..3f19f6f
 +}
 diff --git a/util/linuxfw/iptables_runner_test.go b/util/linuxfw/iptables_runner_test.go
 new file mode 100644
-index 0000000..51dc2bc
+index 0000000..d590911
 --- /dev/null
 +++ b/util/linuxfw/iptables_runner_test.go
-@@ -0,0 +1,558 @@
-+//go:build ignore
-+
+@@ -0,0 +1,592 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
++//go:build linux
 +
 +package linuxfw
 +
@@ -2412,6 +2447,8 @@ index 0000000..51dc2bc
 +	preroutingArgs := []string{
 +		"-m", "conntrack",
 +		"--ctstate", "ESTABLISHED,RELATED",
++		"-m", "connmark",
++		"!", "--mark", "0x0/0xff0000",
 +		"-j", "CONNMARK",
 +		"--restore-mark",
 +		"--nfmask", "0xff0000",
@@ -2600,12 +2637,45 @@ index 0000000..51dc2bc
 +		}
 +	}
 +}
++
++// TestDelLoopbackRuleMissing verifies DelLoopbackRule is a no-op (not an error)
++// when the rule is absent, so removing an address whose loopback rule was never
++// added in this instance -- e.g. one left on the interface by a previous
++// tailscaled -- isn't blocked. See tailscale/tailscale#19974.
++func TestDelLoopbackRuleMissing(t *testing.T) {
++	iptr := newFakeIPTablesRunner()
++	if err := iptr.AddChains(); err != nil {
++		t.Fatal(err)
++	}
++	defer iptr.DelChains()
++
++	addr := netip.MustParseAddr("100.64.0.99")
++	rule := []string{"-i", "lo", "-s", addr.String(), "-j", "ACCEPT"}
++
++	// No AddLoopbackRule for addr, so its rule is absent. Delete must not error.
++	if err := iptr.DelLoopbackRule(addr); err != nil {
++		t.Fatalf("DelLoopbackRule with no rule present: %v", err)
++	}
++
++	// And it still deletes the rule when present.
++	if err := iptr.AddLoopbackRule(addr); err != nil {
++		t.Fatal(err)
++	}
++	if err := iptr.DelLoopbackRule(addr); err != nil {
++		t.Fatalf("DelLoopbackRule with rule present: %v", err)
++	}
++	if exists, err := iptr.ipt4.Exists("filter", "ts-input", rule...); err != nil {
++		t.Fatal(err)
++	} else if exists {
++		t.Error("loopback rule still present after DelLoopbackRule")
++	}
++}
 diff --git a/util/linuxfw/linuxfw.go b/util/linuxfw/linuxfw.go
 new file mode 100644
-index 0000000..4be86eb
+index 0000000..96e6fab
 --- /dev/null
 +++ b/util/linuxfw/linuxfw.go
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,200 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -2615,16 +2685,17 @@ index 0000000..4be86eb
 +package linuxfw
 +
 +import (
++	"encoding/binary"
 +	"errors"
 +	"fmt"
 +	"os"
 +	"strconv"
 +	"strings"
 +
++	"github.com/tailscale/netlink"
 +	"github.com/metacubex/tailscale/feature"
 +	"github.com/metacubex/tailscale/tsconst"
 +	"github.com/metacubex/tailscale/types/logger"
-+	"github.com/tailscale/netlink"
 +)
 +
 +// MatchDecision is the decision made by the firewall for a packet matched by a rule.
@@ -2694,19 +2765,28 @@ index 0000000..4be86eb
 +	bypassMarkNum      = tsconst.LinuxBypassMarkNum
 +)
 +
-+// getTailscaleFwmarkMaskNeg returns the negation of TailscaleFwmarkMask in bytes.
++// getTailscaleFwmarkMaskNeg returns the negation of TailscaleFwmarkMask
++// in native byte order.
 +func getTailscaleFwmarkMaskNeg() []byte {
-+	return []byte{0xff, 0x00, 0xff, 0xff}
++	return nativeEndianUint32(^uint32(fwmarkMaskNum))
 +}
 +
-+// getTailscaleFwmarkMask returns the TailscaleFwmarkMask in bytes.
++// getTailscaleFwmarkMask returns the TailscaleFwmarkMask in native byte order.
 +func getTailscaleFwmarkMask() []byte {
-+	return []byte{0x00, 0xff, 0x00, 0x00}
++	return nativeEndianUint32(fwmarkMaskNum)
 +}
 +
-+// getTailscaleSubnetRouteMark returns the TailscaleSubnetRouteMark in bytes.
++// getTailscaleSubnetRouteMark returns the TailscaleSubnetRouteMark
++// in native byte order.
 +func getTailscaleSubnetRouteMark() []byte {
-+	return []byte{0x00, 0x04, 0x00, 0x00}
++	return nativeEndianUint32(subnetRouteMarkNum)
++}
++
++// nativeEndianUint32 returns v as a 4-byte slice in the host's native byte order.
++func nativeEndianUint32(v uint32) []byte {
++	b := make([]byte, 4)
++	binary.NativeEndian.PutUint32(b, v)
++	return b
 +}
 +
 +// checkIPv6ForTest can be set in tests.
@@ -2798,7 +2878,7 @@ index 0000000..4be86eb
 +}
 diff --git a/util/linuxfw/nftables.go b/util/linuxfw/nftables.go
 new file mode 100644
-index 0000000..8911d05
+index 0000000..4e34ab9
 --- /dev/null
 +++ b/util/linuxfw/nftables.go
 @@ -0,0 +1,296 @@
@@ -2811,17 +2891,17 @@ index 0000000..8911d05
 +package linuxfw
 +
 +import (
++	"cmp"
 +	"encoding/binary"
 +	"fmt"
-+	cmp "github.com/metacubex/tailscale/util/go120/cmp"
 +	"sort"
 +	"strings"
 +
-+	"github.com/metacubex/tailscale/types/logger"
 +	"github.com/google/nftables"
 +	"github.com/google/nftables/expr"
 +	"github.com/google/nftables/xt"
 +	"golang.org/x/sys/unix"
++	"github.com/metacubex/tailscale/types/logger"
 +)
 +
 +// DebugNetfilter prints debug information about netfilter rules to the
@@ -3415,15 +3495,14 @@ index 0000000..35764a2
 +}
 diff --git a/util/linuxfw/nftables_for_svcs_test.go b/util/linuxfw/nftables_for_svcs_test.go
 new file mode 100644
-index 0000000..0524ec5
+index 0000000..c3be3fc
 --- /dev/null
 +++ b/util/linuxfw/nftables_for_svcs_test.go
-@@ -0,0 +1,318 @@
-+//go:build ignore
-+
+@@ -0,0 +1,317 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
++//go:build linux
 +
 +package linuxfw
 +
@@ -3739,10 +3818,10 @@ index 0000000..0524ec5
 +}
 diff --git a/util/linuxfw/nftables_runner.go b/util/linuxfw/nftables_runner.go
 new file mode 100644
-index 0000000..9ce62ca
+index 0000000..9df9f45
 --- /dev/null
 +++ b/util/linuxfw/nftables_runner.go
-@@ -0,0 +1,2443 @@
+@@ -0,0 +1,2488 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -3760,11 +3839,11 @@ index 0000000..9ce62ca
 +	"reflect"
 +	"strings"
 +
-+	"github.com/metacubex/tailscale/net/tsaddr"
-+	"github.com/metacubex/tailscale/types/logger"
 +	"github.com/google/nftables"
 +	"github.com/google/nftables/expr"
 +	"golang.org/x/sys/unix"
++	"github.com/metacubex/tailscale/net/tsaddr"
++	"github.com/metacubex/tailscale/types/logger"
 +)
 +
 +const (
@@ -3993,11 +4072,16 @@ index 0000000..9ce62ca
 +
 +// ClampMSSToPMTU ensures that all packets with TCP flags (SYN, ACK, RST) set
 +// being forwarded via the given interface (tun) have MSS set to <MTU of the
-+// interface> - 40 (IP and TCP headers). This can be useful if this tailscale
-+// instance is expected to run as a forwarding proxy, forwarding packets from an
-+// endpoint with higher MTU in an environment where path MTU discovery is
-+// expected to not work (such as the proxies created by the Tailscale Kubernetes
-+// operator). ClamMSSToPMTU creates a new base-chain ts-clamp in the filter
++// interface> - 40 (IP and TCP headers). It clamps both directions of a
++// forwarded TCP handshake: the SYN leaving via tun and the SYN-ACK arriving on
++// tun. Clamping only the output direction would leave the endpoint on the other
++// side of the proxy advertising an MSS that is too large for the tun MTU,
++// black-holing large segments when path MTU discovery is broken. This can be
++// useful if this tailscale instance is expected to run as a forwarding proxy,
++// forwarding packets from an endpoint with higher MTU in an environment where
++// path MTU discovery is expected to not work (such as the proxies created by
++// the Tailscale Kubernetes operator). ClampMSSToPMTU creates a new base-chain
++// ts-clamp in the filter
 +// table with accept policy and priority -150. In practice, this means that for
 +// SYN packets the clamp rule in this chain will likely run first and accept the
 +// packet. This is fine because 1) nftables run ALL chains with the same hook
@@ -4034,61 +4118,75 @@ index 0000000..9ce62ca
 +		return fmt.Errorf("error ensuring forward chain: %w", err)
 +	}
 +
-+	clampRule := &nftables.Rule{
-+		Table: filterTable,
-+		Chain: fwChain,
-+		Exprs: []expr.Any{
-+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
-+			&expr.Cmp{
-+				Op:       expr.CmpOpEq,
-+				Register: 1,
-+				Data:     []byte(tun),
++	// clampRuleForIface builds a rule that clamps the MSS of forwarded TCP
++	// handshake packets matching tun on the given interface-name meta key.
++	// ifaceKey is either expr.MetaKeyOIFNAME (packets leaving via tun) or
++	// expr.MetaKeyIIFNAME (packets arriving on tun).
++	clampRuleForIface := func(ifaceKey expr.MetaKey) *nftables.Rule {
++		return &nftables.Rule{
++			Table: filterTable,
++			Chain: fwChain,
++			Exprs: []expr.Any{
++				&expr.Meta{Key: ifaceKey, Register: 1},
++				&expr.Cmp{
++					Op:       expr.CmpOpEq,
++					Register: 1,
++					Data:     []byte(tun),
++				},
++				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
++				&expr.Cmp{
++					Op:       expr.CmpOpEq,
++					Register: 1,
++					Data:     []byte{unix.IPPROTO_TCP},
++				},
++				&expr.Payload{
++					DestRegister: 1,
++					Base:         expr.PayloadBaseTransportHeader,
++					Offset:       13,
++					Len:          1,
++				},
++				&expr.Bitwise{
++					DestRegister:   1,
++					SourceRegister: 1,
++					Len:            1,
++					Mask:           []byte{0x02},
++					Xor:            []byte{0x00},
++				},
++				&expr.Cmp{
++					Op:       expr.CmpOpNeq, // match any packet with a TCP flag set (SYN, ACK, RST)
++					Register: 1,
++					Data:     []byte{0x00},
++				},
++				&expr.Rt{
++					Register: 1,
++					Key:      expr.RtTCPMSS,
++				},
++				&expr.Byteorder{
++					DestRegister:   1,
++					SourceRegister: 1,
++					Op:             expr.ByteorderHton,
++					Len:            2,
++					Size:           2,
++				},
++				&expr.Exthdr{
++					SourceRegister: 1,
++					Type:           2,
++					Offset:         2,
++					Len:            2,
++					Op:             expr.ExthdrOpTcpopt,
++				},
 +			},
-+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-+			&expr.Cmp{
-+				Op:       expr.CmpOpEq,
-+				Register: 1,
-+				Data:     []byte{unix.IPPROTO_TCP},
-+			},
-+			&expr.Payload{
-+				DestRegister: 1,
-+				Base:         expr.PayloadBaseTransportHeader,
-+				Offset:       13,
-+				Len:          1,
-+			},
-+			&expr.Bitwise{
-+				DestRegister:   1,
-+				SourceRegister: 1,
-+				Len:            1,
-+				Mask:           []byte{0x02},
-+				Xor:            []byte{0x00},
-+			},
-+			&expr.Cmp{
-+				Op:       expr.CmpOpNeq, // match any packet with a TCP flag set (SYN, ACK, RST)
-+				Register: 1,
-+				Data:     []byte{0x00},
-+			},
-+			&expr.Rt{
-+				Register: 1,
-+				Key:      expr.RtTCPMSS,
-+			},
-+			&expr.Byteorder{
-+				DestRegister:   1,
-+				SourceRegister: 1,
-+				Op:             expr.ByteorderHton,
-+				Len:            2,
-+				Size:           2,
-+			},
-+			&expr.Exthdr{
-+				SourceRegister: 1,
-+				Type:           2,
-+				Offset:         2,
-+				Len:            2,
-+				Op:             expr.ExthdrOpTcpopt,
-+			},
-+		},
++		}
 +	}
-+	n.conn.AddRule(clampRule)
++
++	// Clamp both directions of the forwarded handshake: the SYN leaving via
++	// tun towards the tailnet peer, and the SYN-ACK arriving on tun and being
++	// forwarded back out towards the originating endpoint. Matching only the
++	// output interface leaves the endpoint on the other side advertising an MSS
++	// that is too large for the tun MTU, which black-holes large segments when
++	// PMTU discovery is broken.
++	n.conn.AddRule(clampRuleForIface(expr.MetaKeyOIFNAME))
++	n.conn.AddRule(clampRuleForIface(expr.MetaKeyIIFNAME))
 +	return n.conn.Flush()
 +}
 +
@@ -4161,6 +4259,9 @@ index 0000000..9ce62ca
 +// getChainFromTable returns the chain with the given name from the given table.
 +// Note that a chain name is unique within a table.
 +func getChainFromTable(c *nftables.Conn, table *nftables.Table, name string) (*nftables.Chain, error) {
++	if table == nil {
++		return nil, fmt.Errorf("could not get chain %q: table not initialized", name)
++	}
 +	chains, err := c.ListChainsOfTableFamily(table.Family)
 +	if err != nil {
 +		return nil, fmt.Errorf("list chains: %w", err)
@@ -4326,8 +4427,9 @@ index 0000000..9ce62ca
 +
 +	DeleteSvc(svc, tun string, targetIPs []netip.Addr, pm []PortMap) error
 +
-+	// ClampMSSToPMTU adds a rule to the mangle/FORWARD chain to clamp MSS for
-+	// traffic destined for the provided tun interface.
++	// ClampMSSToPMTU adds rules to clamp the MSS of forwarded TCP handshake
++	// packets in both directions (entering and leaving the provided tun
++	// interface), so both endpoints negotiate an MSS that fits the tun MTU.
 +	ClampMSSToPMTU(tun string, addr netip.Addr) error
 +
 +	// AddMagicsockPortRule adds a rule to the ts-input chain to accept
@@ -5662,9 +5764,7 @@ index 0000000..9ce62ca
 +}
 +
 +func nativeUint32(v uint32) []byte {
-+	b := make([]byte, 4)
-+	binary.NativeEndian.PutUint32(b, v)
-+	return b
++	return nativeEndianUint32(v)
 +}
 +
 +func makeStatefulRuleExprs(tunname string) []expr.Any {
@@ -5851,6 +5951,24 @@ index 0000000..9ce62ca
 +
 +// makeConnmarkRestoreExprs creates nftables expressions to restore mark from conntrack.
 +// Implements: ct state established,related ct mark & 0xff0000 != 0 meta mark set ct mark & 0xff0000
++//
++// LIMITATION: Unlike iptables CONNMARK --restore-mark with --nfmask, this implementation
++// overwrites non-Tailscale bits in the packet mark rather than merging them. This is a
++// fundamental limitation of the Linux kernel's nftables expression VM (not the Go library).
++//
++// The nftables Bitwise expression only supports: (register & CONSTANT_MASK) ^ CONSTANT_XOR.
++// It cannot perform register-to-register operations needed for perfect bit preservation:
++//
++//	meta mark = (meta mark & ~0xff0000) | (ct mark & 0xff0000)
++//	                 ^^^^^                   ^^^^^^^
++//	            needs meta mark         and ct mark combined
++//
++// In contrast, iptables CONNMARK is a specialized kernel module with custom C code that
++// can atomically merge marks from different sources.
++//
++// The conditional check (ct mark & 0xff0000 != 0) prevents the worst case of wiping all
++// mark bits to zero. Perfect bit preservation would require kernel
++// changes to add register-to-register bitwise operations to nftables.
 +func makeConnmarkRestoreExprs() []expr.Any {
 +	return []expr.Any{
 +		// Load conntrack state into register 1
@@ -5886,7 +6004,13 @@ index 0000000..9ce62ca
 +			Mask:           getTailscaleFwmarkMask(),
 +			Xor:            []byte{0x00, 0x00, 0x00, 0x00},
 +		},
-+		// Set packet mark from register 1
++		// Check if masked ct mark is non-zero (critical: prevents wiping marks with 0)
++		&expr.Cmp{
++			Op:       expr.CmpOpNeq,
++			Register: 1,
++			Data:     []byte{0, 0, 0, 0},
++		},
++		// Set packet mark from register 1 (contains ct mark & 0xff0000)
 +		&expr.Meta{
 +			Key:            expr.MetaKeyMARK,
 +			SourceRegister: true,
@@ -6188,15 +6312,14 @@ index 0000000..9ce62ca
 +}
 diff --git a/util/linuxfw/nftables_runner_test.go b/util/linuxfw/nftables_runner_test.go
 new file mode 100644
-index 0000000..1e1617b
+index 0000000..3b9c49f
 --- /dev/null
 +++ b/util/linuxfw/nftables_runner_test.go
-@@ -0,0 +1,1424 @@
-+//go:build ignore
-+
+@@ -0,0 +1,1423 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
++//go:build linux
 +
 +package linuxfw
 +
@@ -6204,19 +6327,19 @@ index 0000000..1e1617b
 +	"bytes"
 +	"errors"
 +	"fmt"
-+	slices "github.com/metacubex/tailscale/util/go120/slices"
 +	"net/netip"
 +	"runtime"
++	"slices"
 +	"strings"
 +	"testing"
 +
-+	"github.com/metacubex/tailscale/net/tsaddr"
-+	"github.com/metacubex/tailscale/tstest"
-+	"github.com/metacubex/tailscale/types/logger"
 +	"github.com/google/nftables"
 +	"github.com/google/nftables/expr"
 +	"github.com/mdlayher/netlink"
 +	"github.com/vishvananda/netns"
++	"github.com/metacubex/tailscale/net/tsaddr"
++	"github.com/metacubex/tailscale/tstest"
++	"github.com/metacubex/tailscale/types/logger"
 +)
 +
 +func toAnySlice[T any](s []T) []any {
@@ -6493,7 +6616,7 @@ index 0000000..1e1617b
 +		// nft add chain ip ts-filter-test ts-forward-test { type filter hook forward priority 0\; }
 +		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x14\x00\x03\x00\x74\x73\x2d\x66\x6f\x72\x77\x61\x72\x64\x2d\x74\x65\x73\x74\x00\x14\x00\x04\x80\x08\x00\x01\x00\x00\x00\x00\x02\x08\x00\x02\x00\x00\x00\x00\x00\x0b\x00\x07\x00\x66\x69\x6c\x74\x65\x72\x00\x00"),
 +		// nft add rule ip ts-filter-test ts-forward-test iifname "testTunn" counter meta mark set mark and 0xff00ffff xor 0x40000
-+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x14\x00\x02\x00\x74\x73\x2d\x66\x6f\x72\x77\x61\x72\x64\x2d\x74\x65\x73\x74\x00\x10\x01\x04\x80\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x06\x08\x00\x01\x00\x00\x00\x00\x01\x30\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x24\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x10\x00\x03\x80\x0c\x00\x01\x00\x74\x65\x73\x74\x54\x75\x6e\x6e\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\xff\x00\xff\xff\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x04\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x03\x00\x00\x00\x00\x01"),
++		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x14\x00\x02\x00\x74\x73\x2d\x66\x6f\x72\x77\x61\x72\x64\x2d\x74\x65\x73\x74\x00\x10\x01\x04\x80\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x06\x08\x00\x01\x00\x00\x00\x00\x01\x30\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x24\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x10\x00\x03\x80\x0c\x00\x01\x00\x74\x65\x73\x74\x54\x75\x6e\x6e\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\xff\xff\x00\xff\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x04\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x03\x00\x00\x00\x00\x01"),
 +		// batch end
 +		[]byte("\x00\x00\x00\x0a"),
 +	}
@@ -6621,7 +6744,7 @@ index 0000000..1e1617b
 +		// nft add chain ip ts-nat-test ts-postrouting-test { type nat hook postrouting priority 100; }
 +		[]byte("\x02\x00\x00\x00\x10\x00\x01\x00\x74\x73\x2d\x6e\x61\x74\x2d\x74\x65\x73\x74\x00\x18\x00\x03\x00\x74\x73\x2d\x70\x6f\x73\x74\x72\x6f\x75\x74\x69\x6e\x67\x2d\x74\x65\x73\x74\x00\x14\x00\x04\x80\x08\x00\x01\x00\x00\x00\x00\x04\x08\x00\x02\x00\x00\x00\x00\x64\x08\x00\x07\x00\x6e\x61\x74\x00"),
 +		// nft add rule ip ts-nat-test ts-postrouting-test meta mark & 0x00ff0000 == 0x00040000 counter masquerade
-+		[]byte("\x02\x00\x00\x00\x10\x00\x01\x00\x74\x73\x2d\x6e\x61\x74\x2d\x74\x65\x73\x74\x00\x18\x00\x02\x00\x74\x73\x2d\x70\x6f\x73\x74\x72\x6f\x75\x74\x69\x6e\x67\x2d\x74\x65\x73\x74\x00\xd8\x00\x04\x80\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\xff\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x04\x00\x00\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x14\x00\x01\x80\x09\x00\x01\x00\x6d\x61\x73\x71\x00\x00\x00\x00\x04\x00\x02\x80"),
++		[]byte("\x02\x00\x00\x00\x10\x00\x01\x00\x74\x73\x2d\x6e\x61\x74\x2d\x74\x65\x73\x74\x00\x18\x00\x02\x00\x74\x73\x2d\x70\x6f\x73\x74\x72\x6f\x75\x74\x69\x6e\x67\x2d\x74\x65\x73\x74\x00\xd8\x00\x04\x80\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\x00\xff\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x04\x00\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x14\x00\x01\x80\x09\x00\x01\x00\x6d\x61\x73\x71\x00\x00\x00\x00\x04\x00\x02\x80"),
 +		// batch end
 +		[]byte("\x00\x00\x00\x0a"),
 +	}
@@ -6692,7 +6815,7 @@ index 0000000..1e1617b
 +		// nft add chain ip ts-filter-test ts-forward-test { type filter hook forward priority 0\; }
 +		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x14\x00\x03\x00\x74\x73\x2d\x66\x6f\x72\x77\x61\x72\x64\x2d\x74\x65\x73\x74\x00\x14\x00\x04\x80\x08\x00\x01\x00\x00\x00\x00\x02\x08\x00\x02\x00\x00\x00\x00\x00\x0b\x00\x07\x00\x66\x69\x6c\x74\x65\x72\x00\x00"),
 +		// nft add rule ip ts-filter-test ts-forward-test meta mark and 0x00ff0000 eq 0x00040000 counter accept
-+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x14\x00\x02\x00\x74\x73\x2d\x66\x6f\x72\x77\x61\x72\x64\x2d\x74\x65\x73\x74\x00\xf4\x00\x04\x80\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\xff\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x04\x00\x00\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x30\x00\x01\x80\x0e\x00\x01\x00\x69\x6d\x6d\x65\x64\x69\x61\x74\x65\x00\x00\x00\x1c\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x00\x10\x00\x02\x80\x0c\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01"),
++		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x14\x00\x02\x00\x74\x73\x2d\x66\x6f\x72\x77\x61\x72\x64\x2d\x74\x65\x73\x74\x00\xf4\x00\x04\x80\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\x00\xff\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x04\x00\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x30\x00\x01\x80\x0e\x00\x01\x00\x69\x6d\x6d\x65\x64\x69\x61\x74\x65\x00\x00\x00\x1c\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x00\x10\x00\x02\x80\x0c\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01"),
 +		// batch end
 +		[]byte("\x00\x00\x00\x0a"),
 +	}
@@ -7513,7 +7636,7 @@ index 0000000..1e1617b
 +		// nft add chain ip mangle PREROUTING { type filter hook prerouting priority mangle; }
 +		[]byte("\x02\x00\x00\x00\x0b\x00\x01\x00\x6d\x61\x6e\x67\x6c\x65\x00\x00\x0f\x00\x03\x00\x50\x52\x45\x52\x4f\x55\x54\x49\x4e\x47\x00\x00\x14\x00\x04\x80\x08\x00\x01\x00\x00\x00\x00\x00\x08\x00\x02\x00\xff\xff\xff\x6a\x0b\x00\x07\x00\x66\x69\x6c\x74\x65\x72\x00\x00"),
 +		// nft add rule ip mangle PREROUTING ct state established,related ct mark & 0xff0000 != 0 meta mark set ct mark & 0xff0000
-+		[]byte("\x02\x00\x00\x00\x0b\x00\x01\x00\x6d\x61\x6e\x67\x6c\x65\x00\x00\x0f\x00\x02\x00\x50\x52\x45\x52\x4f\x55\x54\x49\x4e\x47\x00\x00\x1c\x01\x04\x80\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x00\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x06\x00\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x00\x00\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\xff\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x03\x00\x00\x00\x00\x01"),
++		[]byte("\x02\x00\x00\x00\x0b\x00\x01\x00\x6d\x61\x6e\x67\x6c\x65\x00\x00\x0f\x00\x02\x00\x50\x52\x45\x52\x4f\x55\x54\x49\x4e\x47\x00\x00\x48\x01\x04\x80\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x00\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x06\x00\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x00\x00\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\x00\xff\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x03\x00\x00\x00\x00\x01"),
 +		// batch end
 +		[]byte("\x00\x00\x00\x0a"),
 +	}
@@ -7554,7 +7677,7 @@ index 0000000..1e1617b
 +		// nft add chain ip mangle OUTPUT { type route hook output priority mangle; }
 +		[]byte("\x02\x00\x00\x00\x0b\x00\x01\x00\x6d\x61\x6e\x67\x6c\x65\x00\x00\x0b\x00\x03\x00\x4f\x55\x54\x50\x55\x54\x00\x00\x14\x00\x04\x80\x08\x00\x01\x00\x00\x00\x00\x03\x08\x00\x02\x00\xff\xff\xff\x6a\x0a\x00\x07\x00\x72\x6f\x75\x74\x65\x00\x00\x00"),
 +		// nft add rule ip mangle OUTPUT ct state new meta mark & 0xff0000 != 0 ct mark set meta mark & 0xff0000
-+		[]byte("\x02\x00\x00\x00\x0b\x00\x01\x00\x6d\x61\x6e\x67\x6c\x65\x00\x00\x0b\x00\x02\x00\x4f\x55\x54\x50\x55\x54\x00\x00\xb0\x01\x04\x80\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x00\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x08\x00\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\xff\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\xff\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x04\x00\x00\x00\x00\x01"),
++		[]byte("\x02\x00\x00\x00\x0b\x00\x01\x00\x6d\x61\x6e\x67\x6c\x65\x00\x00\x0b\x00\x02\x00\x4f\x55\x54\x50\x55\x54\x00\x00\xb0\x01\x04\x80\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x00\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x08\x00\x00\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\x00\xff\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x2c\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x20\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x0c\x00\x03\x80\x08\x00\x01\x00\x00\x00\x00\x00\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x01\x00\x00\x00\x00\x01\x44\x00\x01\x80\x0c\x00\x01\x00\x62\x69\x74\x77\x69\x73\x65\x00\x34\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x01\x08\x00\x03\x00\x00\x00\x00\x04\x0c\x00\x04\x80\x08\x00\x01\x00\x00\x00\xff\x00\x0c\x00\x05\x80\x08\x00\x01\x00\x00\x00\x00\x00\x20\x00\x01\x80\x07\x00\x01\x00\x63\x74\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x03\x08\x00\x04\x00\x00\x00\x00\x01"),
 +		// batch end
 +		[]byte("\x00\x00\x00\x0a"),
 +	}
@@ -7719,7 +7842,7 @@ index 0000000..27c5ee5
 +}
 diff --git a/wgengine/router/osrouter/ifconfig_windows.go b/wgengine/router/osrouter/ifconfig_windows.go
 new file mode 100644
-index 0000000..933c0bf
+index 0000000..e4716e8
 --- /dev/null
 +++ b/wgengine/router/osrouter/ifconfig_windows.go
 @@ -0,0 +1,834 @@
@@ -7733,9 +7856,9 @@ index 0000000..933c0bf
 +import (
 +	"errors"
 +	"fmt"
-+	slices "github.com/metacubex/tailscale/util/go120/slices"
 +	"log"
 +	"net/netip"
++	"slices"
 +	"sort"
 +	"time"
 +
@@ -7748,9 +7871,9 @@ index 0000000..933c0bf
 +
 +	ole "github.com/go-ole/go-ole"
 +	"github.com/metacubex/tailscale-wireguard-go/tun"
-+	"github.com/metacubex/tailscale/util/winipcfg"
 +	"go4.org/netipx"
 +	"golang.org/x/sys/windows"
++	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 +)
 +
 +// monitorDefaultRoutes subscribes to route change events and updates
@@ -8559,12 +8682,10 @@ index 0000000..933c0bf
 +}
 diff --git a/wgengine/router/osrouter/ifconfig_windows_test.go b/wgengine/router/osrouter/ifconfig_windows_test.go
 new file mode 100644
-index 0000000..bfd90f0
+index 0000000..f272a59
 --- /dev/null
 +++ b/wgengine/router/osrouter/ifconfig_windows_test.go
-@@ -0,0 +1,242 @@
-+//go:build ignore
-+
+@@ -0,0 +1,240 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -8578,7 +8699,7 @@ index 0000000..bfd90f0
 +	"strings"
 +	"testing"
 +
-+	"github.com/metacubex/tailscale/util/winipcfg"
++	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 +)
 +
 +func randIP() netip.Addr {
@@ -8828,12 +8949,10 @@ index 0000000..a22538f
 +var shutdownConfig router.Config
 diff --git a/wgengine/router/osrouter/osrouter_test.go b/wgengine/router/osrouter/osrouter_test.go
 new file mode 100644
-index 0000000..1499f20
+index 0000000..5e81d62
 --- /dev/null
 +++ b/wgengine/router/osrouter/osrouter_test.go
-@@ -0,0 +1,17 @@
-+//go:build ignore
-+
+@@ -0,0 +1,15 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -8884,10 +9003,10 @@ index 0000000..f006af6
 +}
 diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
 new file mode 100644
-index 0000000..5f901e9
+index 0000000..301b9a4
 --- /dev/null
 +++ b/wgengine/router/osrouter/router_linux.go
-@@ -0,0 +1,1734 @@
+@@ -0,0 +1,2023 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -8896,12 +9015,17 @@ index 0000000..5f901e9
 +package osrouter
 +
 +import (
++	"bytes"
 +	"errors"
 +	"fmt"
++	"io"
++	"iter"
 +	"net"
 +	"net/netip"
 +	"os"
 +	"os/exec"
++	"path/filepath"
++	"slices"
 +	"strconv"
 +	"strings"
 +	"sync"
@@ -8909,22 +9033,24 @@ index 0000000..5f901e9
 +	"syscall"
 +	"time"
 +
++	"github.com/tailscale/netlink"
 +	"github.com/metacubex/tailscale-wireguard-go/tun"
++	"go4.org/netipx"
++	"golang.org/x/sys/unix"
++	"golang.org/x/time/rate"
 +	"github.com/metacubex/tailscale/envknob"
 +	"github.com/metacubex/tailscale/health"
 +	"github.com/metacubex/tailscale/net/netmon"
++	"github.com/metacubex/tailscale/net/tsaddr"
 +	"github.com/metacubex/tailscale/tsconst"
 +	"github.com/metacubex/tailscale/types/logger"
 +	"github.com/metacubex/tailscale/types/opt"
 +	"github.com/metacubex/tailscale/types/preftype"
 +	"github.com/metacubex/tailscale/util/eventbus"
 +	"github.com/metacubex/tailscale/util/linuxfw"
++	"github.com/metacubex/tailscale/util/set"
 +	"github.com/metacubex/tailscale/version/distro"
 +	"github.com/metacubex/tailscale/wgengine/router"
-+	"github.com/tailscale/netlink"
-+	"go4.org/netipx"
-+	"golang.org/x/sys/unix"
-+	"golang.org/x/time/rate"
 +)
 +
 +func init() {
@@ -8961,8 +9087,20 @@ index 0000000..5f901e9
 +
 +	// Various feature checks for the network stack.
 +	ipRuleAvailable bool     // whether kernel was built with IP_MULTIPLE_TABLES
-+	v6Available     bool     // whether the kernel supports IPv6
 +	fwmaskWorksLazy opt.Bool // whether we can use 'ip rule...fwmark <mark>/<mask>'; set lazily
++
++	// interfaceV6Usable reports whether the kernel has IPv6 enabled on the
++	// tunnel interface specifically (distinct from global IPv6 support,
++	// which the netfilter runner tracks). Always set: the constructor wires
++	// it to interfaceV6UsableForTun; tests override it. See #20447.
++	interfaceV6Usable func() bool
++
++	// interfaceV6UsableMemo memoizes interfaceV6Usable for the duration of a
++	// single Set, so its many getV6Available calls don't each hit /proc. It's
++	// an atomic tri-state (see the memoV6 constants) because getV6Available is
++	// also reached, without holding mu, from the onIPRuleDeleted timer's
++	// justAddIPRules; the unset value there means "read live". See #20447.
++	interfaceV6UsableMemo atomic.Int32
 +
 +	// ipPolicyPrefBase is the base priority at which ip rules are installed.
 +	ipPolicyPrefBase int
@@ -8972,6 +9110,7 @@ index 0000000..5f901e9
 +
 +	mu                sync.Mutex
 +	addrs             map[netip.Prefix]bool
++	lastScanAddrs     set.Set[netip.Prefix] // desired addrs at the last successful orphan scan; nil until the first scan
 +	routes            map[netip.Prefix]bool
 +	localRoutes       map[netip.Prefix]bool
 +	snatSubnetRoutes  bool
@@ -9010,6 +9149,7 @@ index 0000000..5f901e9
 +		ipRuleFixLimiter: rate.NewLimiter(rate.Every(5*time.Second), 10),
 +		ipPolicyPrefBase: 5200,
 +	}
++	r.interfaceV6Usable = func() bool { return interfaceV6UsableForTun(r.tunname) }
 +	ec := bus.Client("router-linux")
 +	r.rulesAddedPub = eventbus.Publish[AddIPRules](ec)
 +	eventbus.SubscribeFunc(ec, func(rs netmon.RuleDeleted) {
@@ -9057,8 +9197,6 @@ index 0000000..5f901e9
 +		r.ipPolicyPrefBase = 1300
 +		r.logf("mwan3 on openWRT detected, switching policy base priority to 1300")
 +	}
-+
-+	r.v6Available = linuxfw.CheckIPv6(r.logf) == nil
 +
 +	r.fixupWSLMTU()
 +
@@ -9307,6 +9445,11 @@ index 0000000..5f901e9
 +func (r *linuxRouter) Set(cfg *router.Config) error {
 +	r.mu.Lock()
 +	defer r.mu.Unlock()
++	// Memoize the tun's IPv6 usability for the duration of this Set so the
++	// per-address/route getV6Available calls don't each re-read /proc.
++	// snapshotV6Usable runs now; the closure it returns (trailing ()) is
++	// deferred to clear the memo on return.
++	defer r.snapshotV6Usable()()
 +	var errs []error
 +	if cfg == nil {
 +		cfg = &shutdownConfig
@@ -9340,11 +9483,47 @@ index 0000000..5f901e9
 +	}
 +	r.routes = newRoutes
 +
++	prevAddrs := r.addrs
 +	newAddrs, err := cidrDiff("addr", r.addrs, cfg.LocalAddrs, r.addAddress, r.delAddress, r.logf)
 +	if err != nil {
 +		errs = append(errs, err)
 +	}
 +	r.addrs = newAddrs
++
++	// r.addrs only tracks what this instance configured, so it misses
++	// Tailscale addresses a previous instance left on a persistent tailscale0.
++	// After the reconcile above (so our own addresses and their loopback rules
++	// are installed first), sweep any Tailscale-range interface address that
++	// isn't desired and that we don't already track (prevAddrs). Like cidrDiff,
++	// this trusts cfg.LocalAddrs to be authoritative. See #19974.
++	//
++	// TODO(bcreane): a late orphan with no config change -- IPv6 becoming
++	// available, or an external re-add -- isn't caught here; re-run this sweep on
++	// netmon.ChangeDelta to handle it. See tailscale/corp#43882.
++	wantAddrs := set.SetOf(cfg.LocalAddrs)
++	if r.lastScanAddrs == nil || !r.lastScanAddrs.Equal(wantAddrs) {
++		if ifaceAddrs, err := r.tailscaleInterfaceAddrs(); err != nil {
++			r.logf("router: enumerating interface addresses failed, skipping orphan cleanup: %v", err)
++		} else {
++			r.lastScanAddrs = wantAddrs
++			kernelAddrs := r.deletableAddrs(ifaceAddrs)
++			var removed []netip.Prefix
++			for p := range orphanedAddrs(kernelAddrs, cfg.LocalAddrs) {
++				if prevAddrs[p] {
++					continue // an address we were tracking; cidrDiff already handled it
++				}
++				if err := r.delAddress(p); err != nil {
++					r.logf("router: removing stale address %v from %s failed: %v", p, r.tunname, err)
++					errs = append(errs, err)
++					continue
++				}
++				removed = append(removed, p)
++			}
++			if len(removed) > 0 {
++				r.logf("router: removed %d stale Tailscale address(es) from %s left by a previous instance: %v", len(removed), r.tunname, removed)
++			}
++		}
++	}
 +
 +	// Ensure that the SNAT rule is added or removed as needed.
 +	switch {
@@ -9380,7 +9559,9 @@ index 0000000..5f901e9
 +	// Connmark rules for rp_filter compatibility.
 +	// Always enabled when netfilter is ON to handle all rp_filter=1 scenarios
 +	// (normal operation, exit nodes, subnet routers, and clients using exit nodes).
-+	netfilterOn := cfg.NetfilterMode == netfilterOn
++	// Gate on r.netfilterMode (actual state) rather than cfg.NetfilterMode
++	// (desired state) so we don't call into the runner when chain setup failed.
++	netfilterOn := r.netfilterMode == netfilterOn
 +	switch {
 +	case netfilterOn == r.connmarkEnabled:
 +		// state already correct, nothing to do.
@@ -9420,8 +9601,8 @@ index 0000000..5f901e9
 +		r.enableIPForwarding()
 +	}
 +
-+	// Remove the rule to drop off-tailnet CGNAT traffic, if asked.
-+	if netfilterOn || cfg.NetfilterMode == netfilterNoDivert {
++	// Remove the rule to drop off-tailnet CGNAT traffic, if needed.
++	if netfilterOn || r.netfilterMode == netfilterNoDivert {
 +		var cgnatMode linuxfw.CGNATMode
 +		if cfg.RemoveCGNATDropRule {
 +			cgnatMode = linuxfw.CGNATModeReturn
@@ -9468,7 +9649,7 @@ index 0000000..5f901e9
 +	Code:     "docker-stateful-filtering",
 +	Title:    "Docker with stateful filtering",
 +	Severity: health.SeverityMedium,
-+	Text:     health.StaticMessage("Stateful filtering is enabled and Docker was detected; this may prevent Docker containers on this host from resolving DNS and connecting to Tailscale nodes. See https://github.com/metacubex/tailscale/s/stateful-docker"),
++	Text:     health.StaticMessage("Stateful filtering is enabled and Docker was detected; this may prevent Docker containers on this host from resolving DNS and connecting to Tailscale nodes. See https://tailscale.com/s/stateful-docker"),
 +})
 +
 +func (r *linuxRouter) updateStatefulFilteringWithDockerWarning(cfg *router.Config) {
@@ -9732,12 +9913,88 @@ index 0000000..5f901e9
 +// getV6FilteringAvailable returns true if the router is able to setup the
 +// required tailscale filter rules for IPv6.
 +func (r *linuxRouter) getV6FilteringAvailable() bool {
++	if r.nfr == nil {
++		return false
++	}
 +	return r.nfr.HasIPV6() && r.nfr.HasIPV6Filter()
 +}
 +
-+// getV6Available returns true if the host supports IPv6.
++// getV6Available reports whether the router can manage IPv6. r.nfr can be nil if
++// setupNetfilterLocked failed earlier in Set (which continues on error), so
++// treat a nil runner as no IPv6 rather than dereferencing it.
++//
++// It requires both global IPv6 support (the netfilter runner) and IPv6 on the
++// tun interface itself, which can differ: the kernel may refuse IPv6 on the tun
++// while global IPv6 is fine. The per-interface check consults /proc, so within
++// a single Set (which calls this once per address and route) the result is
++// snapshotted by snapshotV6Usable rather than re-read each time. See #20447.
 +func (r *linuxRouter) getV6Available() bool {
-+	return r.nfr.HasIPV6()
++	if r.nfr == nil {
++		return false
++	}
++	switch memoV6(r.interfaceV6UsableMemo.Load()) {
++	case memoV6Usable:
++		return r.nfr.HasIPV6()
++	case memoV6Unusable:
++		return false
++	default: // memoV6Unset: no snapshot active, read live.
++		return r.nfr.HasIPV6() && r.interfaceV6Usable()
++	}
++}
++
++// memoV6 is the state of a linuxRouter.interfaceV6UsableMemo snapshot.
++type memoV6 int32
++
++const (
++	memoV6Unset    memoV6 = iota // no snapshot active; read live
++	memoV6Usable                 // snapshot: IPv6 usable on the tun interface
++	memoV6Unusable               // snapshot: IPv6 not usable on the tun interface
++)
++
++// snapshotV6Usable memoizes interfaceV6Usable for the duration of a Set, so
++// its many getV6Available calls don't each hit /proc. It returns a function
++// that clears the snapshot, intended to be deferred. The snapshot is taken
++// once: an IPv6-enabled flip concurrent with a single Set is rare and, since a
++// stray v6 operation is no longer fatal, harmless until the next Set. See
++// #20447.
++func (r *linuxRouter) snapshotV6Usable() func() {
++	m := memoV6Unusable
++	if r.interfaceV6Usable() {
++		m = memoV6Usable
++	}
++	r.interfaceV6UsableMemo.Store(int32(m))
++	return func() { r.interfaceV6UsableMemo.Store(int32(memoV6Unset)) }
++}
++
++// interfaceV6UsableForTun reports whether the kernel has IPv6 enabled on the
++// named interface. The kernel creates /proc/sys/net/ipv6/conf/<iface>/ only
++// once IPv6 is up on the interface (e.g. an MTU below the 1280-byte IPv6
++// minimum removes it entirely), and disable_ipv6 within it reflects whether
++// IPv6 has since been turned off explicitly.
++func interfaceV6UsableForTun(tunname string) bool {
++	if tunname == "" {
++		return false
++	}
++	// Open under conf/ with os.OpenInRoot so a "../" or symlink in tunname can't
++	// escape the directory.
++	f, err := os.OpenInRoot("/proc/sys/net/ipv6/conf", filepath.Join(tunname, "disable_ipv6"))
++	if err != nil {
++		// A missing directory/knob means IPv6 isn't up on the interface, so it's
++		// unavailable. Any other error (e.g. EACCES, or tunname escaping the
++		// root) means we couldn't read the knob; assume IPv6 is usable rather
++		// than skipping it on a transient or defensive error.
++		return !os.IsNotExist(err)
++	}
++	defer f.Close()
++	bs, err := io.ReadAll(f)
++	if err != nil {
++		return true // couldn't read; assume usable
++	}
++	disabled, err := strconv.ParseBool(strings.TrimSpace(string(bs)))
++	if err != nil {
++		return true // unparseable; assume usable
++	}
++	return !disabled
 +}
 +
 +// addAddress adds an IP/mask to the tunnel interface. Fails if the
@@ -9766,30 +10023,142 @@ index 0000000..5f901e9
 +	return nil
 +}
 +
-+// delAddress removes an IP/mask from the tunnel interface. Fails if
-+// the address is not assigned to the interface, or if the removal
-+// fails.
++// delAddress removes an IP/mask from the tunnel interface. It attempts both the
++// loopback-rule teardown and the address deletion even if the former fails, so a
++// missing firewall rule can't leak the address; errors from both are joined.
 +func (r *linuxRouter) delAddress(addr netip.Prefix) error {
-+	if !r.getV6Available() && addr.Addr().Is6() {
-+		return nil
-+	}
++	var errs []error
 +	if err := r.delLoopbackRule(addr.Addr()); err != nil {
-+		return err
++		errs = append(errs, err)
 +	}
++	if err := r.delAddrRaw(addr); err != nil {
++		errs = append(errs, err)
++	}
++	return errors.Join(errs...)
++}
++
++// delAddrRaw deletes addr from the tunnel interface without the loopback-rule
++// teardown that [linuxRouter.delAddress] does.
++func (r *linuxRouter) delAddrRaw(addr netip.Prefix) error {
 +	if r.useIPCommand() {
 +		if err := r.cmd.run("ip", "addr", "del", addr.String(), "dev", r.tunname); err != nil {
 +			return fmt.Errorf("deleting address %q from tunnel interface: %w", addr, err)
 +		}
-+	} else {
-+		link, err := r.link()
-+		if err != nil {
-+			return fmt.Errorf("deleting address %v, %w", addr, err)
-+		}
-+		if err := netlink.AddrDel(link, nlAddrOfPrefix(addr)); err != nil {
-+			return fmt.Errorf("deleting address %v from tunnel interface: %w", addr, err)
-+		}
++		return nil
++	}
++	link, err := r.link()
++	if err != nil {
++		return fmt.Errorf("deleting address %v, %w", addr, err)
++	}
++	if err := netlink.AddrDel(link, nlAddrOfPrefix(addr)); err != nil {
++		return fmt.Errorf("deleting address %v from tunnel interface: %w", addr, err)
 +	}
 +	return nil
++}
++
++// isDeletableAddr reports whether ip, found on the tunnel interface, is a
++// Tailscale-range address the live router should delete. It excludes IPv6 when
++// IPv6 is unavailable so the Set-time sweep doesn't churn on addresses this
++// instance couldn't have installed; the teardown path uses [tailscaleAddrs]
++// instead and removes every Tailscale-range address.
++func (r *linuxRouter) isDeletableAddr(ip netip.Addr) bool {
++	ip = ip.Unmap()
++	if !tsaddr.IsTailscaleIP(ip) {
++		return false
++	}
++	return !ip.Is6() || r.getV6Available()
++}
++
++// tailscaleAddrs yields only the Tailscale-range addresses from addrs, per
++// [tsaddr.IsTailscaleIP].
++func tailscaleAddrs(addrs iter.Seq[netip.Prefix]) iter.Seq[netip.Prefix] {
++	return func(yield func(netip.Prefix) bool) {
++		for p := range addrs {
++			if tsaddr.IsTailscaleIP(p.Addr()) && !yield(p) {
++				return
++			}
++		}
++	}
++}
++
++// deletableAddrs yields the addresses from addrs the live router should delete,
++// per [linuxRouter.isDeletableAddr].
++func (r *linuxRouter) deletableAddrs(addrs iter.Seq[netip.Prefix]) iter.Seq[netip.Prefix] {
++	return func(yield func(netip.Prefix) bool) {
++		for p := range addrs {
++			if r.isDeletableAddr(p.Addr()) && !yield(p) {
++				return
++			}
++		}
++	}
++}
++
++// tailscaleInterfaceAddrs yields the addresses on the tunnel interface,
++// preserving each kernel prefix length so a later delete matches. It errors if
++// the interface can't be read.
++func (r *linuxRouter) tailscaleInterfaceAddrs() (iter.Seq[netip.Prefix], error) {
++	if r.useIPCommand() {
++		return r.tailscaleInterfaceAddrsIPCommand()
++	}
++	link, err := r.link()
++	if err != nil {
++		return nil, err
++	}
++	addrs, err := netlink.AddrList(link, netlink.FAMILY_ALL)
++	if err != nil {
++		return nil, err
++	}
++	var ret []netip.Prefix
++	for _, a := range addrs {
++		if a.IPNet == nil {
++			continue
++		}
++		if pfx, ok := netipx.FromStdIPNet(a.IPNet); ok {
++			ret = append(ret, pfx)
++		}
++	}
++	return slices.Values(ret), nil
++}
++
++// tailscaleInterfaceAddrsIPCommand is the "ip" command implementation of
++// [linuxRouter.tailscaleInterfaceAddrs], used in tests and when
++// TS_DEBUG_USE_IP_COMMAND is set.
++func (r *linuxRouter) tailscaleInterfaceAddrsIPCommand() (iter.Seq[netip.Prefix], error) {
++	out, err := r.cmd.output("ip", "-oneline", "addr", "show", "dev", r.tunname)
++	if err != nil {
++		return nil, err
++	}
++	var ret []netip.Prefix
++	for line := range bytes.Lines(out) {
++		// `ip -oneline addr show` puts each address on one line as
++		// "inet <cidr>" or "inet6 <cidr>".
++		fields := strings.Fields(string(line))
++		for i := 0; i+1 < len(fields); i++ {
++			if fields[i] != "inet" && fields[i] != "inet6" {
++				continue
++			}
++			p, err := netip.ParsePrefix(fields[i+1])
++			if err != nil {
++				break
++			}
++			ret = append(ret, p)
++			break
++		}
++	}
++	return slices.Values(ret), nil
++}
++
++// orphanedAddrs yields the addresses in kernelAddrs that are not in desired,
++// i.e. the stale addresses left on the interface that the sweep should remove.
++func orphanedAddrs(kernelAddrs iter.Seq[netip.Prefix], desired []netip.Prefix) iter.Seq[netip.Prefix] {
++	want := set.SetOf(desired)
++	return func(yield func(netip.Prefix) bool) {
++		for p := range kernelAddrs {
++			if !want.Contains(p) && !yield(p) {
++				return
++			}
++		}
++	}
 +}
 +
 +// addLoopbackRule adds a firewall rule to permit loopback traffic to
@@ -10578,9 +10947,48 @@ index 0000000..5f901e9
 +// The function calls cleanUp for both iptables and nftables since which ever
 +// netfilter runner is used, the cleanUp function for the other one doesn't do anything.
 +func cleanUp(logf logger.Logf, interfaceName string) {
-+	if interfaceName != "userspace-networking" && platformCanNetfilter() {
++	if interfaceName == "userspace-networking" {
++		return
++	}
++	if platformCanNetfilter() {
 +		linuxfw.IPTablesCleanUp(logf)
 +		linuxfw.NfTablesCleanUp(logf)
++	}
++	removeOrphanedAddrsForCleanup(logf, osCommandRunner{ambientCapNetAdmin: useAmbientCaps()}, interfaceName)
++}
++
++// removeOrphanedAddrsForCleanup removes every Tailscale-range address from
++// interfaceName. On the teardown path (tailscaled --cleanup, and the cleanup at
++// daemon start) there is no desired config or running router, so every such
++// address is an orphan. Best-effort: failures are logged, not returned.
++func removeOrphanedAddrsForCleanup(logf logger.Logf, cmd commandRunner, interfaceName string) {
++	// A minimal router suffices: delAddress reaches delLoopbackRule, which
++	// returns early because netfilterMode is netfilterOff (the zero value), so
++	// the nil nfr/netMon/health are never dereferenced. logf is wrapped to match
++	// the live router's "router: " prefix.
++	r := &linuxRouter{
++		logf:    logger.WithPrefix(logf, "router: "),
++		tunname: interfaceName,
++		cmd:     cmd,
++	}
++	ifaceAddrs, err := r.tailscaleInterfaceAddrs()
++	if err != nil {
++		r.logf("enumerating %s addresses for cleanup failed: %v", interfaceName, err)
++		return
++	}
++	// Unlike the live sweep's deletableAddrs, tailscaleAddrs keeps IPv6 too: a
++	// previous instance may have left a ULA orphan even though this process never
++	// brought IPv6 up. delAddress is idempotent, so a no-op v6 delete is harmless.
++	var removed []netip.Prefix
++	for p := range tailscaleAddrs(ifaceAddrs) {
++		if err := r.delAddress(p); err != nil {
++			r.logf("removing stale address %v from %s during cleanup failed: %v", p, interfaceName, err)
++			continue
++		}
++		removed = append(removed, p)
++	}
++	if len(removed) > 0 {
++		r.logf("removed %d stale Tailscale address(es) from %s during cleanup: %v", len(removed), interfaceName, removed)
 +	}
 +}
 +
@@ -10624,12 +11032,10 @@ index 0000000..5f901e9
 +}
 diff --git a/wgengine/router/osrouter/router_linux_test.go b/wgengine/router/osrouter/router_linux_test.go
 new file mode 100644
-index 0000000..96c2128
+index 0000000..d9c22a5
 --- /dev/null
 +++ b/wgengine/router/osrouter/router_linux_test.go
-@@ -0,0 +1,1554 @@
-+//go:build ignore
-+
+@@ -0,0 +1,2114 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -10638,12 +11044,12 @@ index 0000000..96c2128
 +import (
 +	"errors"
 +	"fmt"
-+	slices "github.com/metacubex/tailscale/util/go120/slices"
 +	"math/rand"
 +	"net/netip"
 +	"os"
 +	"reflect"
 +	"regexp"
++	"slices"
 +	"sort"
 +	"strings"
 +	"sync"
@@ -10651,7 +11057,9 @@ index 0000000..96c2128
 +	"testing"
 +
 +	"github.com/google/go-cmp/cmp"
++	"github.com/tailscale/netlink"
 +	"github.com/metacubex/tailscale-wireguard-go/tun"
++	"go4.org/netipx"
 +	"github.com/metacubex/tailscale/health"
 +	"github.com/metacubex/tailscale/net/netmon"
 +	"github.com/metacubex/tailscale/net/tsaddr"
@@ -10661,10 +11069,9 @@ index 0000000..96c2128
 +	"github.com/metacubex/tailscale/util/eventbus"
 +	"github.com/metacubex/tailscale/util/eventbus/eventbustest"
 +	"github.com/metacubex/tailscale/util/linuxfw"
++	"github.com/metacubex/tailscale/util/set"
 +	"github.com/metacubex/tailscale/version/distro"
 +	"github.com/metacubex/tailscale/wgengine/router"
-+	"github.com/tailscale/netlink"
-+	"go4.org/netipx"
 +)
 +
 +type Config = router.Config
@@ -11156,6 +11563,10 @@ index 0000000..96c2128
 +	ht := health.NewTracker(bus)
 +	router, err := newUserspaceRouterAdvanced(t.Logf, "tailscale0", mon, fake, ht, bus)
 +	router.(*linuxRouter).nfr = fake.nfr
++	// Don't consult the live /proc for the tun's IPv6 state in tests; the
++	// fake netfilter runner's HasIPV6 (noV6) is the authoritative v6 signal
++	// here. See #20447.
++	router.(*linuxRouter).interfaceV6Usable = func() bool { return true }
 +	if err != nil {
 +		t.Fatalf("failed to create router: %v", err)
 +	}
@@ -11193,7 +11604,13 @@ index 0000000..96c2128
 +	t    *testing.T
 +	ipt4 map[string][]string
 +	ipt6 map[string][]string
-+	// we always assume ipv6 and ipv6 nat are enabled when testing
++	// we always assume ipv6 and ipv6 nat are enabled when testing, unless
++	// noV6 is set.
++	noV6 bool
++
++	addChainsErr          error // if non-nil, AddChains returns it instead of setting up chains
++	addConnmarkSaveCalls  int
++	addExternalCGNATCalls int
 +}
 +
 +func newIPTablesRunner(t *testing.T) linuxfw.NetfilterRunner {
@@ -11426,6 +11843,9 @@ index 0000000..96c2128
 +}
 +
 +func (n *fakeIPTablesRunner) AddChains() error {
++	if n.addChainsErr != nil {
++		return n.addChainsErr
++	}
 +	for _, ipt := range []map[string][]string{n.ipt4, n.ipt6} {
 +		for _, chain := range []string{"filter/ts-input", "filter/ts-forward", "nat/ts-postrouting"} {
 +			ipt[chain] = nil
@@ -11554,6 +11974,7 @@ index 0000000..96c2128
 +}
 +
 +func (n *fakeIPTablesRunner) AddConnmarkSaveRule() error {
++	n.addConnmarkSaveCalls++
 +	// PREROUTING rule: restore mark from conntrack
 +	prerouteRule := "-m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark --nfmask 0xff0000 --ctmask 0xff0000"
 +	for _, ipt := range []map[string][]string{n.ipt4, n.ipt6} {
@@ -11602,6 +12023,7 @@ index 0000000..96c2128
 +}
 +
 +func (n *fakeIPTablesRunner) AddExternalCGNATRules(mode linuxfw.CGNATMode, tunname string) error {
++	n.addExternalCGNATCalls++
 +	rules, err := buildExternalCGNATRules(mode, tunname)
 +	if err != nil {
 +		return err
@@ -11627,7 +12049,7 @@ index 0000000..96c2128
 +	return nil
 +}
 +
-+func (n *fakeIPTablesRunner) HasIPV6() bool       { return true }
++func (n *fakeIPTablesRunner) HasIPV6() bool       { return !n.noV6 }
 +func (n *fakeIPTablesRunner) HasIPV6NAT() bool    { return true }
 +func (n *fakeIPTablesRunner) HasIPV6Filter() bool { return true }
 +
@@ -11748,6 +12170,12 @@ index 0000000..96c2128
 +	switch args[2] {
 +	case "add":
 +		if slices.Contains(*ls, rest) {
++			// addAddress uses netlink AddrReplace in production, which is
++			// idempotent; model that for addresses rather than erroring.
++			// Routes/rules keep strict add semantics.
++			if args[1] == "addr" {
++				return nil
++			}
 +			o.t.Errorf("can't add %q, already present", rest)
 +			return errors.New("already exists")
 +		}
@@ -11785,8 +12213,34 @@ index 0000000..96c2128
 +}
 +
 +func (o *fakeOS) output(args ...string) ([]byte, error) {
-+	want := "ip rule list priority 10000"
 +	got := strings.Join(args, " ")
++
++	if dev, ok := strings.CutPrefix(got, "ip -oneline addr show dev "); ok {
++		// Render o.ips (entries look like "<cidr> dev <ifname>") in a simplified
++		// `ip -oneline addr show` format that exposes the family token the parser
++		// keys off of. Only addresses on the requested device are returned, so the
++		// fake models a real multi-interface host: `show dev tailscale0` never
++		// reports an address that lives on eth0.
++		var ret []string
++		for _, e := range o.ips {
++			cidr, rest, _ := strings.Cut(e, " ")
++			if rest != "dev "+dev {
++				continue // address is on a different interface
++			}
++			p, err := netip.ParsePrefix(cidr)
++			if err != nil {
++				continue
++			}
++			fam := "inet"
++			if p.Addr().Is6() {
++				fam = "inet6"
++			}
++			ret = append(ret, fmt.Sprintf("3: %s    %s %s scope global %s", dev, fam, cidr, dev))
++		}
++		return []byte(strings.Join(ret, "\n")), nil
++	}
++
++	want := "ip rule list priority 10000"
 +	if got != want {
 +		o.t.Errorf("unexpected command that wants output: %v", got)
 +		return nil, errExec
@@ -12182,9 +12636,523 @@ index 0000000..96c2128
 +			oldPortRule, nfr.ipt4["filter/ts-input"])
 +	}
 +}
++
++// TestSetSkipsNetfilterAddonsWhenSetupFails verifies that Set does not invoke
++// rule-management methods that depend on the ts-* chains existing when chain
++// setup failed.
++func TestSetSkipsNetfilterAddonsWhenSetupFails(t *testing.T) {
++	nfr := newIPTablesRunner(t).(*fakeIPTablesRunner)
++	nfr.addChainsErr = errors.New("kernel lacks netfilter support")
++
++	bus := eventbus.New()
++	defer bus.Close()
++	mon, err := netmon.New(bus, logger.Discard)
++	if err != nil {
++		t.Fatal(err)
++	}
++	mon.Start()
++	defer mon.Close()
++
++	fake := NewFakeOS(t)
++	ht := health.NewTracker(bus)
++	r, err := newUserspaceRouterAdvanced(logger.Discard, "tailscale0", mon, fake, ht, bus)
++	if err != nil {
++		t.Fatalf("newUserspaceRouterAdvanced: %v", err)
++	}
++	lr := r.(*linuxRouter)
++	lr.nfr = nfr
++	// Keep the fake netfilter runner's HasIPV6 the sole v6 signal; don't
++	// consult the live /proc for the tun's IPv6 state. See #20447.
++	lr.interfaceV6Usable = func() bool { return true }
++	if err := lr.Up(); err != nil {
++		t.Fatalf("Up: %v", err)
++	}
++	defer lr.Close()
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.101.102.103/10"),
++		NetfilterMode: netfilterOn,
++	}
++	// Set must return an error (chain setup failed) but must not panic.
++	if err := lr.Set(cfg); err == nil {
++		t.Fatal("Set returned nil; want error because AddChains failed")
++	}
++	if lr.netfilterMode != netfilterOff {
++		t.Errorf("netfilterMode = %v; want netfilterOff after failed AddChains", lr.netfilterMode)
++	}
++	if nfr.addConnmarkSaveCalls != 0 {
++		t.Errorf("AddConnmarkSaveRule called %d times; want 0 when chain setup failed",
++			nfr.addConnmarkSaveCalls)
++	}
++	if nfr.addExternalCGNATCalls != 0 {
++		t.Errorf("AddExternalCGNATRules called %d times; want 0 when chain setup failed",
++			nfr.addExternalCGNATCalls)
++	}
++}
++
++// newTestLinuxRouter builds a linuxRouter backed by a fakeOS, brought up and
++// ready for Set, mirroring TestSetSkipsNetfilterAddonsWhenSetupFails.
++func newTestLinuxRouter(t *testing.T) (*linuxRouter, *fakeOS) {
++	t.Helper()
++	bus := eventbus.New()
++	t.Cleanup(bus.Close)
++	mon, err := netmon.New(bus, logger.Discard)
++	if err != nil {
++		t.Fatal(err)
++	}
++	mon.Start()
++	t.Cleanup(func() { mon.Close() })
++
++	fake := NewFakeOS(t)
++	ht := health.NewTracker(bus)
++	r, err := newUserspaceRouterAdvanced(logger.Discard, "tailscale0", mon, fake, ht, bus)
++	if err != nil {
++		t.Fatalf("newUserspaceRouterAdvanced: %v", err)
++	}
++	lr := r.(*linuxRouter)
++	lr.nfr = fake.nfr
++	// Keep the fake netfilter runner's HasIPV6 (noV6) the sole v6 signal;
++	// don't consult the live /proc for the tun's IPv6 state. See #20447.
++	lr.interfaceV6Usable = func() bool { return true }
++	if err := lr.Up(); err != nil {
++		t.Fatalf("Up: %v", err)
++	}
++	t.Cleanup(func() { lr.Close() })
++	return lr, fake
++}
++
++// TestSetRemovesOrphanedTailscaleAddrs verifies that Set removes Tailscale-range
++// addresses left on the interface by a previous instance (issue 19974), even
++// though they're absent from the in-memory r.addrs map.
++func TestSetRemovesOrphanedTailscaleAddrs(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++
++	// Simulate a tailscale0 that survived a restart still carrying a prior
++	// profile's CGNAT v4 and Tailscale ULA v6 addresses, plus a non-Tailscale
++	// address that must be left alone.
++	fake.ips = []string{
++		"100.64.0.99/32 dev tailscale0",         // CGNAT v4 orphan
++		"fd7a:115c:a1e0::99/128 dev tailscale0", // ULA v6 orphan
++		"192.168.1.5/24 dev tailscale0",         // non-Tailscale, leave alone
++	}
++	slices.Sort(fake.ips)
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32"),
++		NetfilterMode: netfilterOff,
++	}
++	if err := lr.Set(cfg); err != nil {
++		t.Fatalf("Set: %v", err)
++	}
++
++	if !slices.Contains(fake.ips, "100.64.0.1/32 dev tailscale0") {
++		t.Errorf("desired addr 100.64.0.1/32 not present; ips=%q", fake.ips)
++	}
++	for _, gone := range []string{
++		"100.64.0.99/32 dev tailscale0",
++		"fd7a:115c:a1e0::99/128 dev tailscale0",
++	} {
++		if slices.Contains(fake.ips, gone) {
++			t.Errorf("orphaned Tailscale addr %q was not removed; ips=%q", gone, fake.ips)
++		}
++	}
++	// Non-Tailscale address must be untouched.
++	if !slices.Contains(fake.ips, "192.168.1.5/24 dev tailscale0") {
++		t.Errorf("non-Tailscale addr 192.168.1.5/24 was wrongly removed; ips=%q", fake.ips)
++	}
++}
++
++// TestSetRemovesOrphanWithNetfilter verifies orphan removal also works with
++// netfilter enabled, where delAddress additionally tears down the address's
++// loopback rule. An orphan from a previous instance has no such rule, so this
++// guards that removing it isn't blocked by the loopback-rule deletion (see the
++// iptables DelLoopbackRule DeleteIfExists handling).
++func TestSetRemovesOrphanWithNetfilter(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++
++	fake.ips = []string{
++		"100.64.0.99/32 dev tailscale0", // CGNAT v4 orphan, no loopback rule
++	}
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32"),
++		NetfilterMode: netfilterOn,
++	}
++	if err := lr.Set(cfg); err != nil {
++		t.Fatalf("Set: %v", err)
++	}
++
++	if slices.Contains(fake.ips, "100.64.0.99/32 dev tailscale0") {
++		t.Errorf("orphan was not removed with netfilter on; ips=%q", fake.ips)
++	}
++	if !slices.Contains(fake.ips, "100.64.0.1/32 dev tailscale0") {
++		t.Errorf("desired addr 100.64.0.1/32 not present; ips=%q", fake.ips)
++	}
++}
++
++// TestSetInstallsLoopbackRuleForExistingAddr covers the persisted-interface
++// restart case: the node's own address is already on tailscale0 (so the kernel
++// reports it), but its per-address loopback rule was flushed when the netfilter
++// chains were rebuilt. Set must still install the loopback rule, i.e. it must
++// not skip addAddress just because the address is already present -- which it
++// would if a desired address were folded into the orphan set. See #19974.
++func TestSetInstallsLoopbackRuleForExistingAddr(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++
++	// The node's own address persisted on the interface across the restart.
++	fake.ips = []string{
++		"100.64.0.1/32 dev tailscale0",
++	}
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32"),
++		NetfilterMode: netfilterOn,
++	}
++	if err := lr.Set(cfg); err != nil {
++		t.Fatalf("Set: %v", err)
++	}
++
++	nfr := fake.nfr.(*fakeIPTablesRunner)
++	wantRule := "-i lo -s 100.64.0.1 -j ACCEPT"
++	if !slices.Contains(nfr.ipt4["filter/ts-input"], wantRule) {
++		t.Errorf("loopback rule %q not installed for already-present addr; ts-input=%q",
++			wantRule, nfr.ipt4["filter/ts-input"])
++	}
++}
++
++// TestSetOrphanScanGatedByAddrChange verifies the interface is scanned for
++// orphans on the first Set and when LocalAddrs changes, but not for route-only
++// updates -- so a subnet router churning routes doesn't pay for a scan on every
++// Set.
++func TestSetOrphanScanGatedByAddrChange(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++
++	// First Set establishes steady state (scans, finds nothing to remove).
++	if err := lr.Set(&Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32"),
++		NetfilterMode: netfilterOff,
++	}); err != nil {
++		t.Fatalf("Set 1: %v", err)
++	}
++
++	// An orphan appears afterward. A route-only update leaves LocalAddrs
++	// unchanged, so the scan is skipped and the orphan stays in place.
++	fake.ips = append(fake.ips, "100.64.0.99/32 dev tailscale0")
++	slices.Sort(fake.ips)
++	if err := lr.Set(&Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32"),
++		Routes:        mustCIDRs("10.0.0.0/24"),
++		NetfilterMode: netfilterOff,
++	}); err != nil {
++		t.Fatalf("Set 2 (route-only): %v", err)
++	}
++	if !slices.Contains(fake.ips, "100.64.0.99/32 dev tailscale0") {
++		t.Errorf("orphan removed on a route-only update; scan should have been skipped; ips=%q", fake.ips)
++	}
++
++	// When LocalAddrs changes, the scan runs again and the orphan is removed.
++	if err := lr.Set(&Config{
++		LocalAddrs:    mustCIDRs("100.64.0.2/32"),
++		Routes:        mustCIDRs("10.0.0.0/24"),
++		NetfilterMode: netfilterOff,
++	}); err != nil {
++		t.Fatalf("Set 3 (addr change): %v", err)
++	}
++	if slices.Contains(fake.ips, "100.64.0.99/32 dev tailscale0") {
++		t.Errorf("orphan not removed after LocalAddrs change; ips=%q", fake.ips)
++	}
++}
++
++// TestSetOrphanScanNotRetriedOnDuplicateLocalAddrs verifies the scan gate
++// compares the desired address set rather than its length against r.addrs. A
++// duplicate in LocalAddrs (or, equivalently, an address that fails to install)
++// leaves r.addrs smaller than len(LocalAddrs); a length-based gate would then
++// rescan on every Set. The set comparison treats the desired set as unchanged.
++func TestSetOrphanScanNotRetriedOnDuplicateLocalAddrs(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++
++	// LocalAddrs with a duplicate: cidrDiff dedups, so r.addrs ends up smaller
++	// than len(LocalAddrs).
++	dupCfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32", "100.64.0.1/32"),
++		NetfilterMode: netfilterOff,
++	}
++	if err := lr.Set(dupCfg); err != nil {
++		t.Fatalf("Set 1: %v", err)
++	}
++
++	// An orphan appears; re-applying the same (duplicated) LocalAddrs must not
++	// trigger a rescan, so the orphan stays.
++	fake.ips = append(fake.ips, "100.64.0.99/32 dev tailscale0")
++	slices.Sort(fake.ips)
++	if err := lr.Set(dupCfg); err != nil {
++		t.Fatalf("Set 2: %v", err)
++	}
++	if !slices.Contains(fake.ips, "100.64.0.99/32 dev tailscale0") {
++		t.Errorf("rescan ran for an unchanged (duplicated) LocalAddrs; ips=%q", fake.ips)
++	}
++}
++
++// TestSetKeepsNonTailscaleAddrs is the safety check: Set must never remove
++// addresses outside Tailscale's ranges, even when they're not in the config.
++func TestSetKeepsNonTailscaleAddrs(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++
++	keep := []string{
++		"192.168.1.5/24 dev tailscale0",        // non-Tailscale v4
++		"fe80::1/64 dev tailscale0",            // link-local v6
++		"100.115.92.5/32 dev tailscale0",       // ChromeOS VM range: in CGNAT, not a Tailscale IP
++		"100.63.0.1/32 dev tailscale0",         // just below CGNAT 100.64.0.0/10
++		"100.128.0.1/32 dev tailscale0",        // just above CGNAT
++		"fd7a:115c:a1e1::1/128 dev tailscale0", // adjacent to the Tailscale ULA /48, not in it
++	}
++	fake.ips = append([]string(nil), keep...)
++	slices.Sort(fake.ips)
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32"),
++		NetfilterMode: netfilterOff,
++	}
++	if err := lr.Set(cfg); err != nil {
++		t.Fatalf("Set: %v", err)
++	}
++
++	for _, k := range keep {
++		if !slices.Contains(fake.ips, k) {
++			t.Errorf("non-Tailscale addr %q was wrongly removed; ips=%q", k, fake.ips)
++		}
++	}
++}
++
++func TestOrphanedAddrs(t *testing.T) {
++	p := netip.MustParsePrefix
++	// orphanedAddrs yields in kernelAddrs order, but compare as sets to be safe.
++	got := set.SetOf(slices.Collect(orphanedAddrs(
++		slices.Values([]netip.Prefix{p("100.64.0.1/32"), p("100.64.0.99/32"), p("fd7a:115c:a1e0::99/128")}),
++		[]netip.Prefix{p("100.64.0.1/32")},
++	)))
++	want := set.SetOf([]netip.Prefix{p("100.64.0.99/32"), p("fd7a:115c:a1e0::99/128")})
++	if !got.Equal(want) {
++		t.Errorf("orphanedAddrs = %v; want %v", got.Slice(), want.Slice())
++	}
++	if got := slices.Collect(orphanedAddrs(slices.Values([]netip.Prefix(nil)), []netip.Prefix{p("100.64.0.1/32")})); got != nil {
++		t.Errorf("orphanedAddrs(nil, ...) = %v; want nil", got)
++	}
++}
++
++// TestGetV6AvailableNilNFR verifies the v6-availability checks don't panic when
++// r.nfr is nil, which happens if setupNetfilterLocked failed earlier in Set.
++// The orphan sweep reaches getV6Available via isDeletableAddr, so this
++// must not deref a nil runner.
++func TestGetV6AvailableNilNFR(t *testing.T) {
++	r := &linuxRouter{} // nfr left nil
++	if r.getV6Available() {
++		t.Error("getV6Available() = true with nil nfr; want false")
++	}
++	if r.getV6FilteringAvailable() {
++		t.Error("getV6FilteringAvailable() = true with nil nfr; want false")
++	}
++	if r.isDeletableAddr(netip.MustParseAddr("fd7a:115c:a1e0::99")) {
++		t.Error("isDeletableAddr(v6) = true with nil nfr; want false")
++	}
++}
++
++// TestSetSkipsV6OrphansWhenV6Unavailable verifies that when IPv6 is
++// unavailable, Set does not enumerate v6 orphans for removal. delAddress
++// no-ops on v6 in that state, so enumerating them would let cidrDiff record a
++// delete that never happened; instead we leave them out of the reconcile.
++func TestSetSkipsV6OrphansWhenV6Unavailable(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++	fake.nfr.(*fakeIPTablesRunner).noV6 = true
++
++	fake.ips = []string{
++		"100.64.0.99/32 dev tailscale0",         // CGNAT v4 orphan, removable
++		"fd7a:115c:a1e0::99/128 dev tailscale0", // ULA v6 orphan, not removable without v6
++	}
++	slices.Sort(fake.ips)
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32"),
++		NetfilterMode: netfilterOff,
++	}
++	if err := lr.Set(cfg); err != nil {
++		t.Fatalf("Set: %v", err)
++	}
++
++	// The v4 orphan is removed; the v6 orphan is left in place rather than
++	// being treated as removed via a no-op delete.
++	if slices.Contains(fake.ips, "100.64.0.99/32 dev tailscale0") {
++		t.Errorf("v4 orphan was not removed; ips=%q", fake.ips)
++	}
++	if !slices.Contains(fake.ips, "fd7a:115c:a1e0::99/128 dev tailscale0") {
++		t.Errorf("v6 orphan should be left alone when v6 is unavailable; ips=%q", fake.ips)
++	}
++}
++
++// TestSetSkipsV6WhenInterfaceV6Unusable verifies that when global IPv6 is
++// available (the netfilter runner reports HasIPV6) but the kernel has not
++// enabled IPv6 on the tunnel interface itself -- e.g. the tun MTU is below the
++// 1280-byte IPv6 minimum -- Set skips the v6 address rather than failing. This
++// is the #20447 scenario: historically the v6 addAddress errored, aborting the
++// whole router pass, which in turn suppressed DNS configuration.
++func TestSetSkipsV6WhenInterfaceV6Unusable(t *testing.T) {
++	lr, fake := newTestLinuxRouter(t)
++	// Global v6 is fine (fake nfr HasIPV6 defaults true), but the tun
++	// interface has no usable v6.
++	lr.interfaceV6Usable = func() bool { return false }
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32", "fd7a:115c:a1e0::1/128"),
++		NetfilterMode: netfilterOff,
++	}
++	if err := lr.Set(cfg); err != nil {
++		t.Fatalf("Set: %v", err)
++	}
++
++	// The v4 address is programmed; the v6 address is skipped rather than
++	// attempted (which would have errored on a v6-less interface).
++	if !slices.Contains(fake.ips, "100.64.0.1/32 dev tailscale0") {
++		t.Errorf("v4 address was not programmed; ips=%q", fake.ips)
++	}
++	if slices.Contains(fake.ips, "fd7a:115c:a1e0::1/128 dev tailscale0") {
++		t.Errorf("v6 address should be skipped when the interface has no usable v6; ips=%q", fake.ips)
++	}
++}
++
++// TestSetSnapshotsV6Usable verifies that a single Set consults the
++// per-interface IPv6 check (which reads /proc) once, rather than once per
++// address and route, even though many getV6Available calls happen within it.
++func TestSetSnapshotsV6Usable(t *testing.T) {
++	lr, _ := newTestLinuxRouter(t)
++	var calls int
++	lr.interfaceV6Usable = func() bool {
++		calls++
++		return true
++	}
++
++	cfg := &Config{
++		LocalAddrs:    mustCIDRs("100.64.0.1/32", "fd7a:115c:a1e0::1/128"),
++		Routes:        mustCIDRs("10.0.0.0/8", "fd00::/8"),
++		NetfilterMode: netfilterOff,
++	}
++	if err := lr.Set(cfg); err != nil {
++		t.Fatalf("Set: %v", err)
++	}
++	if calls != 1 {
++		t.Errorf("interfaceV6Usable called %d times during one Set; want 1 (snapshotted)", calls)
++	}
++}
++
++// TestCleanUpRemovesAllTailscaleAddrs verifies the teardown path removes every
++// Tailscale-range address (IPv4 CGNAT and IPv6 ULA) while leaving non-Tailscale
++// addresses alone.
++func TestCleanUpRemovesAllTailscaleAddrs(t *testing.T) {
++	fake := NewFakeOS(t)
++	fake.ips = []string{
++		"100.64.0.1/32 dev tailscale0",         // CGNAT v4
++		"fd7a:115c:a1e0::1/128 dev tailscale0", // ULA v6
++		"192.168.1.5/24 dev tailscale0",        // non-Tailscale, leave alone
++		"fe80::1/64 dev tailscale0",            // link-local v6, leave alone
++	}
++	slices.Sort(fake.ips)
++
++	removeOrphanedAddrsForCleanup(t.Logf, fake, "tailscale0")
++
++	for _, gone := range []string{
++		"100.64.0.1/32 dev tailscale0",
++		"fd7a:115c:a1e0::1/128 dev tailscale0",
++	} {
++		if slices.Contains(fake.ips, gone) {
++			t.Errorf("Tailscale addr %q was not removed during cleanup; ips=%q", gone, fake.ips)
++		}
++	}
++	for _, keep := range []string{
++		"192.168.1.5/24 dev tailscale0",
++		"fe80::1/64 dev tailscale0",
++	} {
++		if !slices.Contains(fake.ips, keep) {
++			t.Errorf("non-Tailscale addr %q was wrongly removed during cleanup; ips=%q", keep, fake.ips)
++		}
++	}
++}
++
++// TestCleanUpRemovesV6OrphanWithoutNetfilter is the teardown counterpart to
++// TestSetSkipsV6OrphansWhenV6Unavailable: with a nil netfilter runner (so
++// getV6Available is false), cleanup must still remove an IPv6 ULA orphan.
++func TestCleanUpRemovesV6OrphanWithoutNetfilter(t *testing.T) {
++	fake := NewFakeOS(t)
++	fake.ips = []string{
++		"fd7a:115c:a1e0::99/128 dev tailscale0", // ULA v6 orphan
++	}
++
++	removeOrphanedAddrsForCleanup(t.Logf, fake, "tailscale0")
++
++	if slices.Contains(fake.ips, "fd7a:115c:a1e0::99/128 dev tailscale0") {
++		t.Errorf("v6 orphan was not removed during cleanup; ips=%q", fake.ips)
++	}
++}
++
++// TestCleanUpKeepsNearRangeAddrs verifies the teardown sweep removes real
++// Tailscale orphans while leaving addresses at the edges of Tailscale's ranges
++// untouched. In particular the ChromeOS VM range is inside CGNAT 100.64.0.0/10
++// but excluded by tsaddr.IsTailscaleIP, so a naive CGNAT-prefix check would
++// wrongly delete it.
++func TestCleanUpKeepsNearRangeAddrs(t *testing.T) {
++	fake := NewFakeOS(t)
++	remove := []string{
++		"100.64.0.99/32 dev tailscale0",         // CGNAT v4 orphan
++		"fd7a:115c:a1e0::99/128 dev tailscale0", // Tailscale ULA v6 orphan
++	}
++	keep := []string{
++		"100.115.92.5/32 dev tailscale0",       // ChromeOS VM range: in CGNAT, not a Tailscale IP
++		"100.63.0.1/32 dev tailscale0",         // just below CGNAT
++		"100.128.0.1/32 dev tailscale0",        // just above CGNAT
++		"fd7a:115c:a1e1::1/128 dev tailscale0", // adjacent to the Tailscale ULA /48
++		"192.168.1.5/24 dev tailscale0",        // non-Tailscale v4
++		"fe80::1/64 dev tailscale0",            // link-local v6
++	}
++	fake.ips = append(append([]string(nil), remove...), keep...)
++	slices.Sort(fake.ips)
++
++	removeOrphanedAddrsForCleanup(t.Logf, fake, "tailscale0")
++
++	for _, r := range remove {
++		if slices.Contains(fake.ips, r) {
++			t.Errorf("orphan %q was not removed during cleanup; ips=%q", r, fake.ips)
++		}
++	}
++	for _, k := range keep {
++		if !slices.Contains(fake.ips, k) {
++			t.Errorf("near-range non-Tailscale addr %q was wrongly removed during cleanup; ips=%q", k, fake.ips)
++		}
++	}
++}
++
++// TestCleanUpOnlyTouchesTunInterface guards that the sweep is scoped to the
++// tunnel interface. 100.64.0.0/10 is shared ISP CGNAT space, so a host may carry
++// a non-Tailscale CGNAT address on its WAN/other interface; the sweep enumerates
++// and deletes only on tailscale0, so such an address on eth0 must never be
++// touched even though it's in the CGNAT range.
++func TestCleanUpOnlyTouchesTunInterface(t *testing.T) {
++	fake := NewFakeOS(t)
++	fake.ips = []string{
++		"100.64.0.99/32 dev tailscale0", // our orphan on the tun -> removed
++		"100.64.0.5/32 dev eth0",        // someone else's CGNAT on WAN -> must survive
++	}
++	slices.Sort(fake.ips)
++
++	removeOrphanedAddrsForCleanup(t.Logf, fake, "tailscale0")
++
++	if slices.Contains(fake.ips, "100.64.0.99/32 dev tailscale0") {
++		t.Errorf("tailscale0 orphan was not removed; ips=%q", fake.ips)
++	}
++	if !slices.Contains(fake.ips, "100.64.0.5/32 dev eth0") {
++		t.Errorf("non-Tailscale CGNAT addr on eth0 was wrongly removed; ips=%q", fake.ips)
++	}
++}
 diff --git a/wgengine/router/osrouter/router_openbsd.go b/wgengine/router/osrouter/router_openbsd.go
 new file mode 100644
-index 0000000..491e461
+index 0000000..7ec283f
 --- /dev/null
 +++ b/wgengine/router/osrouter/router_openbsd.go
 @@ -0,0 +1,284 @@
@@ -12201,6 +13169,7 @@ index 0000000..491e461
 +	"os/exec"
 +
 +	"github.com/metacubex/tailscale-wireguard-go/tun"
++	"go4.org/netipx"
 +	"github.com/metacubex/tailscale/health"
 +	"github.com/metacubex/tailscale/net/netmon"
 +	"github.com/metacubex/tailscale/net/netns"
@@ -12208,7 +13177,6 @@ index 0000000..491e461
 +	"github.com/metacubex/tailscale/util/eventbus"
 +	"github.com/metacubex/tailscale/util/set"
 +	"github.com/metacubex/tailscale/wgengine/router"
-+	"go4.org/netipx"
 +)
 +
 +func init() {
@@ -12635,7 +13603,7 @@ index 0000000..6e92a71
 +}
 diff --git a/wgengine/router/osrouter/router_userspace_bsd.go b/wgengine/router/osrouter/router_userspace_bsd.go
 new file mode 100644
-index 0000000..535912f
+index 0000000..d95956d
 --- /dev/null
 +++ b/wgengine/router/osrouter/router_userspace_bsd.go
 @@ -0,0 +1,211 @@
@@ -12654,13 +13622,13 @@ index 0000000..535912f
 +	"runtime"
 +
 +	"github.com/metacubex/tailscale-wireguard-go/tun"
++	"go4.org/netipx"
 +	"github.com/metacubex/tailscale/health"
 +	"github.com/metacubex/tailscale/net/netmon"
 +	"github.com/metacubex/tailscale/net/tsaddr"
 +	"github.com/metacubex/tailscale/types/logger"
 +	"github.com/metacubex/tailscale/version"
 +	"github.com/metacubex/tailscale/wgengine/router"
-+	"go4.org/netipx"
 +)
 +
 +func init() {
@@ -12852,7 +13820,7 @@ index 0000000..535912f
 +}
 diff --git a/wgengine/router/osrouter/router_windows.go b/wgengine/router/osrouter/router_windows.go
 new file mode 100644
-index 0000000..6669bfc
+index 0000000..82ba5fe
 --- /dev/null
 +++ b/wgengine/router/osrouter/router_windows.go
 @@ -0,0 +1,397 @@
@@ -12866,27 +13834,27 @@ index 0000000..6669bfc
 +	"context"
 +	"encoding/json"
 +	"fmt"
-+	slices "github.com/metacubex/tailscale/util/go120/slices"
 +	"io"
 +	"net/netip"
 +	"os"
 +	"os/exec"
 +	"path/filepath"
++	"slices"
 +	"strings"
 +	"sync"
 +	"syscall"
 +	"time"
 +
 +	"github.com/metacubex/tailscale-wireguard-go/tun"
++	"golang.org/x/sys/windows"
++	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 +	"github.com/metacubex/tailscale/health"
 +	"github.com/metacubex/tailscale/net/dns"
 +	"github.com/metacubex/tailscale/net/netmon"
 +	"github.com/metacubex/tailscale/types/logger"
 +	"github.com/metacubex/tailscale/util/backoff"
 +	"github.com/metacubex/tailscale/util/eventbus"
-+	"github.com/metacubex/tailscale/util/winipcfg"
 +	"github.com/metacubex/tailscale/wgengine/router"
-+	"golang.org/x/sys/windows"
 +)
 +
 +func init() {
@@ -13255,12 +14223,10 @@ index 0000000..6669bfc
 +}
 diff --git a/wgengine/router/osrouter/router_windows_test.go b/wgengine/router/osrouter/router_windows_test.go
 new file mode 100644
-index 0000000..fb3e0aa
+index 0000000..abbbdf9
 --- /dev/null
 +++ b/wgengine/router/osrouter/router_windows_test.go
-@@ -0,0 +1,21 @@
-+//go:build ignore
-+
+@@ -0,0 +1,19 @@
 +// Copyright (c) Tailscale Inc & contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -13282,7 +14248,7 @@ index 0000000..fb3e0aa
 +}
 diff --git a/wgengine/router/osrouter/runner.go b/wgengine/router/osrouter/runner.go
 new file mode 100644
-index 0000000..06930fd
+index 0000000..82b2680
 --- /dev/null
 +++ b/wgengine/router/osrouter/runner.go
 @@ -0,0 +1,115 @@
@@ -13296,9 +14262,9 @@ index 0000000..06930fd
 +import (
 +	"errors"
 +	"fmt"
-+	slices "github.com/metacubex/tailscale/util/go120/slices"
 +	"os"
 +	"os/exec"
++	"slices"
 +	"strconv"
 +	"strings"
 +	"syscall"

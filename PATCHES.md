@@ -69,18 +69,21 @@ GSO checksum helper when netstack is omitted; the original helper panicked on
 TSMP traffic. It is covered by traffic tests against the shipping executable.
 
 The ff0ecd818181 update removed native OS routing and test infrastructure.
-`0002-native-os-router.patch` restores osrouter and linuxfw from the previous
-1ab893d4162c pin; `0003-test-helpers.patch` restores local control/DERP/STUN
-helpers and their missing imports from the same pin. They remain separate from
-the injected-packet fix. To verify these imports against their source, compare
-the added files with the 1ab893d4162c module archive. The native backend now
+`0002-native-os-router.patch` restores osrouter and linuxfw from a487011f6b1e,
+immediately before the pruning commit. `0003-test-helpers.patch` restores
+local control/DERP/STUN helpers and their missing imports from the previous
+1ab893d4162c pin. They remain separate from the injected-packet fix. To verify these imports against their source, compare
+the added files with their respective source archives. The native backend now
 sets bootstrap DNS through `System.LookupHook`, matching the new API.
 
 The Tailscale fork removed native TUN creation. We restore that through a pinned
 native TUN dependency and an event adapter. Its otherwise-unused Linux router
 code requires Go 1.26 language mode despite the fork's Go 1.20 module directive;
 `build-native.sh` applies that override narrowly. No gVisor is linked in the
-native executable. Build tags are explicit in `scripts/native-tags`.
+native executable. Build tags are explicit in `scripts/native-tags`. The upstream
+`no_easytier` and `no_zerotier` tags omit those unused overlay protocols;
+configurations requesting them fail explicitly. MIPS remains available,
+while the native Jsonnet target continues to select `system`.
 
 ## Configuration
 

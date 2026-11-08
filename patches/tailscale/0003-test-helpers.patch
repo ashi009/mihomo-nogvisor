@@ -1,4 +1,4 @@
-From 5e500eee797454bb428d2ceb2393069de3a59e05 Mon Sep 17 00:00:00 2001
+From e4b97a48bfac3358d616012468d4a963b20b8d5a Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:55:35 +0800
 Subject: [PATCH] test: restore local control and relay helpers
