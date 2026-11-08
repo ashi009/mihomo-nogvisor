@@ -7,6 +7,8 @@ our backend in `native/component/tailnet`, and apply small patches last:
 - `patches/0002-lifecycle.patch`: start/reuse the backend and shut it down.
 - `patches/0003-capture-policy.patch`: decode the scoped interception policy and
   pass it to sing-tun's automatic route/redirect implementation.
+- `patches/0004-service-lifecycle.patch`: lock supervised instances, clean stale
+  network state, and exit on backend, DNS or interception startup failure.
 
 `patches/sing-tun/0001-capture-policy.patch` adds hooks to pinned sing-tun
 v0.4.21. The policy implementation is owned code in `native/sing-tun`, copied
@@ -91,10 +93,35 @@ Mihomo's proxy-host resolver, and return a retryable error until it is ready.
 The backend leaves OS DNS configuration untouched.
 
 An unchanged configuration reload preserves the running backend. Changes to
-backend settings require restart. Startup failures are reported in the core
-log; upstream ApplyConfig has no error return, so a backend startup failure
-currently leaves the process alive and rejects that apply. Procd integration
-must account for this before cutover.
+backend settings require restart. Native startup failures terminate the process
+so procd can retry. DNS binds both TCP and UDP before interception starts.
+
+## OpenWrt service
+
+Install the native binary at `/usr/bin/mihomo`, the rendered Jsonnet config at
+`/etc/mihomo/config.yaml`, `openwrt/mihomo.init` at `/etc/init.d/mihomo` (0755),
+and `openwrt/mihomo.keep` at `/lib/upgrade/keep.d/mihomo`. Keep the data directory
+private (0700), with config and node state files mode 0600. Retain `kmod-tun`
+and `ip-full` explicitly before removing a standalone Tailscale package.
+
+Copy dashboard assets and provider/cache data into `/etc/mihomo`, and copy the
+node identity into its configured `tailnet` directory with both daemons stopped.
+Stop and disable the legacy services before `/etc/init.d/mihomo enable` and
+`/etc/init.d/mihomo start`. Run legacy uninstall hooks while native Mihomo is
+stopped: those hooks can remove shared routing objects.
+
+The init script validates config before starting or reloading and snapshots it
+to `running.yaml`. A malformed reload leaves the running process intact.
+`/etc/init.d/mihomo reload` restarts after validation; dashboard config reload
+retains an unchanged tailnet. procd retries crashes every five seconds without
+a retry limit. `-service` cleans stale state before startup; `-cleanup` removes
+owned rules after stop and refuses to operate while the instance holds its lock.
+Cleanup code is owned in `native/component/native`, outside upstream patches.
+
+Startup diagnostics go to `logread -e mihomo`. Jsonnet sets console level to
+warning; dashboard log subscriptions can still request info/debug events.
+The sysupgrade retention list includes itself, the binary, init script and
+complete data directory. There is no separate UCI configuration or LuCI app.
 
 ## Linux acceptance so far
 
@@ -124,6 +151,10 @@ config/firewall reload, TUN recreation, forced-kill restart and cleanup. A
 regression fixture protects foreign routing rules at priorities 5210 and 32768;
 the previous cleanup failed it and the narrowed cleanup passes. The privileged flag
 is confined to this disposable Linux test container.
+
+Service tests also exercise cleanup locking, repeated offline cleanup after
+SIGKILL, Tailscale rule removal and identity-preserving restart, and DNS bind
+failure before interception can be enabled.
 
 ## 20.1 trial, 2026-11-08
 
@@ -165,3 +196,25 @@ loss does not prevent rollback. The router lacks veth support, so live traffic
 used a physical LAN client; Linux namespace tests remain in Docker. The candidate
 was not installed as the boot service. Long-duration stability, WAN reconnects,
 reboots, throughput and Twingate application acceptance remain unmeasured.
+
+## Permanent 20.1 cutover, 2026-11-09
+
+The combined service is installed at `/usr/bin/mihomo`, enabled under procd,
+and passed a router reboot. The stripped ARM64 binary is 40,108,158 bytes
+(38.25 MiB), SHA-256
+`70b917f070a60bc5e7f01ed4460323069e0e6e3bf792e5c613ba643689b8b2ef`.
+
+On the installed service, invalid reload retained the PID, valid reload and
+stop/start succeeded, and SIGKILL triggered recovery with exactly one set of
+capture and tailnet rules. After reboot, LAN HTTPS returned 204, Zashboard 200,
+MagicDNS retained the node address, and 10.1 reached a separate host on 20.1's
+advertised LAN. The process runs from flash with RssShmem 0 and holds the
+persistent cache open.
+
+ShellCrash was stopped and uninstalled through its interactive CLI; its old
+configuration/subscriptions were retained. Its scripts, service, profile alias
+and scheduled jobs are gone. Standalone Tailscale and both LuCI packages were
+removed, retaining the existing tailscale0 firewall zone and required routing
+packages. A private configuration recovery archive remains on the router.
+No changes were deployed to 10.1 or 30.1. Sustained throughput, WAN reconnects
+and application-specific Twingate acceptance remain unmeasured.

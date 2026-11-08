@@ -1,0 +1,4 @@
+/usr/bin/mihomo
+/etc/init.d/mihomo
+/lib/upgrade/keep.d/mihomo
+/etc/mihomo/

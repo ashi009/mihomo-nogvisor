@@ -1,5 +1,7 @@
 // IPv4 proxy scope and DNS exceptions observed on cito-102.
 function(lan='192.168.20.0/24', mtu=1500) {
+  // Console goes to logd; dashboard subscribers still receive info/debug events.
+  'log-level': 'warning',
   tun: {
     enable: true,
     device: 'utun',

@@ -1,5 +1,4 @@
 #!/bin/sh
-#!/bin/sh
 set -eu
 repo=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 src=${1:?usage: build-native.sh PREPARED_SOURCE OUTPUT}

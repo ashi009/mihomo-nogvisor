@@ -11,7 +11,11 @@ import sys
 import time
 
 def run(*args, **kwargs):
-    return sp.run(args, check=True, text=True, stdout=sp.PIPE, stderr=sp.PIPE, **kwargs).stdout
+    result=sp.run(args, text=True, stdout=sp.PIPE, stderr=sp.PIPE, **kwargs)
+    if result.returncode:
+        print(result.stdout+result.stderr,file=sys.stderr)
+        result.check_returncode()
+    return result.stdout
 
 if len(sys.argv)>1 and sys.argv[1]=='echo':
     import threading
@@ -93,7 +97,7 @@ config=json.loads(Path('/test/capture.json').read_text());(home/'config.json').w
 log=(home/'core.log').open('w+')
 core=None
 def start():
-    p=sp.Popen(['/test/mihomo','-d',str(home),'-f',str(home/'config.json')],stdout=log,stderr=log)
+    p=sp.Popen(['/test/mihomo','-service','-d',str(home),'-f',str(home/'config.json')],stdout=log,stderr=log)
     for _ in range(100):
         time.sleep(.1)
         if p.poll() is not None:raise AssertionError('core exited')
@@ -101,6 +105,8 @@ def start():
     raise AssertionError('capture not ready')
 try:
     core=start()
+    cleanup=['/test/mihomo','-cleanup','-d',str(home),'-f',str(home/'config.json')]
+    assert sp.run(cleanup,stdout=sp.DEVNULL,stderr=sp.DEVNULL).returncode!=0
     check_foreign_rules()
     for port in [22,80,443,8080,8443]:
         check('common port captured','198.51.100.2',port)
@@ -136,7 +142,10 @@ try:
     config['rules']=['MATCH,REJECT']
     (home/'config.json').write_text(json.dumps(config))
     # Restart after abrupt death must replace stale state, not duplicate it.
-    core.kill();core.wait();core=start()
+    core.kill();core.wait();run(*cleanup);run(*cleanup)
+    assert 'table inet mihomo' not in run('nft','list','ruleset')
+    check_foreign_rules()
+    core=start()
     check_foreign_rules()
     check('capture after crash restart','198.51.100.2',80)
     check('bypass after crash restart','198.51.100.2',8443,True,'echo')
@@ -147,6 +156,13 @@ try:
     assert not list(Path('/etc/nftables.d').glob('*mihomo*'))
     check_foreign_rules()
     print('PASS clean shutdown removes TUN, routes, nftables and fw4 include',flush=True)
+    occupied=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    occupied.bind(('0.0.0.0',1053));occupied.listen()
+    failed=sp.Popen(['/test/mihomo','-service','-d',str(home),'-f',str(home/'config.json')],stdout=log,stderr=log)
+    assert failed.wait(timeout=10)!=0
+    occupied.close()
+    assert 'table inet mihomo' not in run('nft','list','ruleset')
+    print('PASS DNS bind failure exits without installing interception',flush=True)
 finally:
     if core and core.poll() is None:core.terminate();core.wait(timeout=15)
     echo.terminate();echo.wait()

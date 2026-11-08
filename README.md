@@ -6,8 +6,9 @@
 
 ## 为什么
 
-原生路由器候选版已加入独立补丁队列：内嵌 Tailscale 原生 TUN 后端，
-并通过 Jsonnet 配置 Mihomo 的透明代理拦截。构建、测试和 20.1 试运行记录见
+原生路由器版本已在 20.1 通过 procd 常驻：内嵌 Tailscale 原生 TUN 后端，
+通过 Jsonnet 配置透明代理拦截，替换 ShellCrash 和独立 Tailscale。
+独立上游补丁队列、构建、测试和部署记录见
 [PATCHES.md](PATCHES.md)。现有定时构建及 `latest` 发布仍使用原配方。
 
 两件事叠加，专治小内存设备：

@@ -1,5 +1,4 @@
 #!/bin/sh
-#!/bin/sh
 set -eu
 repo=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 work=${1:?usage: prepare-native.sh NEW_WORK_DIRECTORY}

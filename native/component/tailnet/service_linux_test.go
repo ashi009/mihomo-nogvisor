@@ -229,7 +229,7 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		if err = os.WriteFile(file, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command("/test/mihomo", "-d", home, "-f", file)
+		cmd := exec.Command("/test/mihomo", "-service", "-d", home, "-f", file)
 		var logs bytes.Buffer
 		cmd.Stdout = &logs
 		cmd.Stderr = &logs
@@ -277,6 +277,42 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 				stopped = true
 				t.Fatalf("shipping %s: %v %v\n%s", kind, result, err, logs.String())
 			}
+		}
+		cmd.Process.Kill()
+		cmd.Wait()
+		stopped = true
+		for i := 0; i < 2; i++ {
+			out, err := exec.Command("/test/mihomo", "-cleanup", "-d", home, "-f", file).CombinedOutput()
+			if err != nil {
+				t.Fatalf("crash cleanup: %v %s", err, out)
+			}
+		}
+		rules, err := exec.Command("ip", "rule").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, priority := range []string{"5210:", "5230:", "5250:", "5270:"} {
+			if bytes.Contains(rules, []byte(priority)) {
+				t.Fatalf("stale tailnet rule: %s", rules)
+			}
+		}
+		cmd = exec.Command("/test/mihomo", "-service", "-d", home, "-f", file)
+		cmd.Stdout, cmd.Stderr = &logs, &logs
+		if err = cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		stopped = false
+		ready = false
+		for i := 0; i < 50; i++ {
+			response, _, err = client.Exchange(q, addr)
+			if err == nil && len(response.Answer) > 0 {
+				ready = response.Answer[0].(*D.A).A.String() == cliIP.String()
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !ready {
+			t.Fatal("shipping restart did not retain identity")
 		}
 		cmd.Process.Signal(syscall.SIGTERM)
 		err = cmd.Wait()
