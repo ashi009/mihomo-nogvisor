@@ -274,6 +274,10 @@ type nativeDNS struct {
 func (d nativeDNS) Address() string  { return "tailscale://" + d.name }
 func (d nativeDNS) ResetConnection() {}
 func (d nativeDNS) ExchangeContext(ctx context.Context, q *D.Msg) (*D.Msg, error) {
+	// An empty startup answer would be negative-cached by Mihomo after joining.
+	if d.backend.State() != ipn.Running {
+		return nil, errors.New("tailnet DNS is not ready")
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

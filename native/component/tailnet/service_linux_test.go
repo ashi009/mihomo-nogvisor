@@ -62,11 +62,18 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	var bootstrapQueries atomic.Int32
+	var allowControl atomic.Bool
+	allowControl.Store(true)
 	bootstrapDNS := &D.Server{PacketConn: bootstrap, Handler: D.HandlerFunc(func(w D.ResponseWriter, q *D.Msg) {
 		response := new(D.Msg)
 		response.SetReply(q)
 		if len(q.Question) == 1 && q.Question[0].Name == "control.native.test." {
 			bootstrapQueries.Add(1)
+			if !allowControl.Load() {
+				response.SetRcode(q, D.RcodeServerFailure)
+				w.WriteMsg(response)
+				return
+			}
 			if q.Question[0].Qtype == D.TypeA {
 				response.Answer = []D.RR{&D.A{Hdr: D.RR_Header{Name: q.Question[0].Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: 1}, A: net.IPv4(127, 0, 0, 1)}}
 			}
@@ -257,6 +264,8 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		if err = os.WriteFile(file, data, 0600); err != nil {
 			t.Fatal(err)
 		}
+		allowControl.Store(false)
+		defer allowControl.Store(true)
 		cmd := exec.Command("/test/mihomo", "-service", "-d", home, "-f", file)
 		var logs bytes.Buffer
 		cmd.Stdout = &logs
@@ -274,6 +283,23 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 		q := new(D.Msg)
 		q.SetQuestion("probe-peer.probe.ts.net.", D.TypeA)
 		client := &D.Client{Timeout: time.Second}
+		// Query before enrollment; this must not poison the post-login cache.
+		sawStartupFailure := false
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+			response, _, err := client.Exchange(q, addr)
+			if err == nil {
+				if response.Rcode != D.RcodeServerFailure {
+					t.Fatalf("pre-enrollment DNS rcode = %d, want SERVFAIL", response.Rcode)
+				}
+				sawStartupFailure = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if !sawStartupFailure {
+			t.Fatal("shipping DNS did not listen before enrollment")
+		}
+		allowControl.Store(true)
 		ready := false
 		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
 			response, _, err := client.Exchange(q, addr)

@@ -138,7 +138,10 @@ at the same state.
 The backend registers `tailscale://tailnet` with Mihomo DNS. Jsonnet sends
 `+.ts.net` there and retains its fake-IP exclusion. Bootstrap lookups use
 Mihomo's proxy-host resolver, and return a retryable error until it is ready.
-The backend leaves OS DNS configuration untouched.
+The backend leaves OS DNS configuration untouched. Before the backend reaches
+Running, MagicDNS returns a temporary failure so Mihomo cannot cache an empty
+pre-enrollment answer for five minutes. The Linux fixture deliberately blocks
+control-plane DNS until it has checked this startup response.
 
 Jsonnet also fixes the dashboard path and update source to Zashboard's stable
 `dist-no-fonts.zip`, which uses system fonts. The dashboard update button calls
