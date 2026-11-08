@@ -46,12 +46,39 @@ jobs:
           tests/linux/run.sh "$RUNNER_TEMP/native/mihomo-$revision" "$RUNNER_TEMP/native" 2>&1 | tee "$RUNNER_TEMP/native/linux-tests.log"
           "$RUNNER_TEMP/native/mihomo" -v | tee "$RUNNER_TEMP/native/version.txt"
           sha256sum "$RUNNER_TEMP/native/mihomo" > "$RUNNER_TEMP/native/SHA256SUMS"
+      - name: Report binary size
+        if: always()
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/native"
+          if [ ! -f "$work/mihomo" ]; then
+            echo 'Native binary was not produced; see the failed build/preparation step.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gzip -n -9 -c "$work/mihomo" > "$work/mihomo.gz"
+          python3 - "$work" <<'PY'
+          import hashlib, json, pathlib, sys
+          work = pathlib.Path(sys.argv[1])
+          files = []
+          for name in ['mihomo', 'mihomo.gz']:
+              data = (work / name).read_bytes()
+              files.append({'file': name, 'bytes': len(data), 'mib': round(len(data) / 2**20, 3), 'sha256': hashlib.sha256(data).hexdigest()})
+          (work / 'size.json').write_text(json.dumps(files, indent=2) + '\n')
+          rows = ['| Artifact | Bytes | MiB |', '|---|---:|---:|']
+          rows += [f'| {f["file"]} | {f["bytes"]:,} | {f["mib"]:.3f} |' for f in files]
+          (work / 'size.md').write_text('Native ARM64 build, stripped with `-s -w`; gzip uses `-n -9`.\n\n' + '\n'.join(rows) + '\n')
+          (work / 'SHA256SUMS').write_text(''.join(f'{f["sha256"]}  {f["file"]}\n' for f in files))
+          PY
+          cat "$work/size.md" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: native-linux-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/native/mihomo
+            ${{ runner.temp }}/native/mihomo.gz
+            ${{ runner.temp }}/native/size.json
+            ${{ runner.temp }}/native/size.md
             ${{ runner.temp }}/native/linux-tests.log
             ${{ runner.temp }}/native/version.txt
             ${{ runner.temp }}/native/SHA256SUMS
