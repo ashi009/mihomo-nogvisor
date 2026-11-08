@@ -1,11 +1,15 @@
-From cea395f35fafd598014f95f1c55f6b35ca16fa8c Mon Sep 17 00:00:00 2001
+From 031303e7864a8038a0019ddea081d71d6f4d9a02 Mon Sep 17 00:00:00 2001
 From: wwqgtxx <wwqgtxx@gmail.com>
 Date: Mon, 9 Nov 2026 06:39:37 +0800
 Subject: [PATCH] net: add an embedding DNS lookup hook
 
+Embedded Tailscale needs to resolve control and relay hosts through the
+application's resolver. Thread an optional lookup hook through its DNS
+clients and retain lookup errors without falling back to other resolvers.
+
 Port MetaCubeX/tailscale ab8269766d9e62deebd7320368c9b567e6fb6b63
-to official Tailscale v1.102.3. Use canonical tailscale.com and standard
-crypto/tls imports; preserve the hook and its fallback semantics.
+with canonical tailscale.com and standard crypto/tls imports. Preserve
+the hook's fallback semantics and tests.
 ---
  control/controlclient/direct.go  |  2 ++
  ipn/ipnlocal/local.go            |  1 +

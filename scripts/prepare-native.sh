@@ -10,7 +10,7 @@ curl -fsSL "https://codeload.github.com/vernesong/mihomo/tar.gz/$rev" -o "$work/
 tar -xzf "$work/source.tar.gz" -C "$work"
 src="$work/mihomo-$rev"
 printf '%s\n' "$rev" > "$src/.upstream-revision"
-for patch_file in "$repo"/patches/*.patch; do git -C "$src" apply "$patch_file"; done
+for patch_file in "$repo"/patches/mihomo/*.patch; do git -C "$src" apply "$patch_file"; done
 cp -R "$repo/native/component/." "$src/component/"
 cd "$src"
 "$repo/scripts/prepare-tailscale.sh" "$src" "$work/tailscale"

@@ -41,7 +41,8 @@ class UpstreamTests(unittest.TestCase):
         commits = [commit(1, 'fix: Smart deadlock'), commit(2, 'fix: DNS routing'), commit(3, 'Merge upstream')]
         updated, path, report, body, branch = u.render(pin, {'sha': new},
             {'files': [{'filename': 'main.go'}]}, commits,
-            'require (\n github.com/metacubex/sing-tun v0.4.29\n)', {'main.go'}, 'ashi009/mihomo-nogvisor')
+            'require (\n github.com/metacubex/sing-tun v0.4.29\n)',
+            u.mihomo_patch_paths(Path(__file__).resolve().parents[2]), 'ashi009/mihomo-nogvisor')
         self.assertEqual(updated['revision'], new)
         self.assertEqual(updated['dependencies']['github.com/metacubex/sing-tun'], 'v0.4.29')
         self.assertEqual(pin['revision'], old)

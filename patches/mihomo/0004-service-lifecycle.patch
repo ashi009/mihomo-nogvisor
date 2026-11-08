@@ -1,8 +1,15 @@
-From 18d2008d7532c5e47c83264e6173e0b2993a17ce Mon Sep 17 00:00:00 2001
+From f33c23fadba1cb1f9016f61a76dcda35a4433342 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:48:18 +0800
-Subject: [PATCH] 0004-service-lifecycle
+Subject: [PATCH] main: supervise native service ownership and startup
 
+A service must not appear healthy while DNS or interception has failed,
+or let competing instances remove each other's network state.
+
+Add locked service and cleanup entry points. Bind both DNS transports
+before enabling interception, propagate startup errors, and shut down
+before exiting on native backend or capture failure so procd can retry.
+Keep ownership and cleanup implementation in component/native.
 ---
  dns/server.go            | 82 +++++++++++++++-------------------------
  hub/executor/executor.go | 23 +++++++----

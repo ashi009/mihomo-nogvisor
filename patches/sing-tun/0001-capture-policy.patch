@@ -1,8 +1,16 @@
-From d873ece5f329a664d2242ed582f154780951e46f Mon Sep 17 00:00:00 2001
+From 091df00930e049103d91968524a201e5dd55ace7 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:52:14 +0800
-Subject: [PATCH] 0001-capture-policy
+Subject: [PATCH] tun: scope automatic routing to the capture policy
 
+The router shares policy routing with Tailscale and must preserve the
+configured capture exceptions. Add hooks into the nftables and route
+lifecycle for the implementation carried in native/sing-tun.
+
+Apply exclusions before UDP connection marks are restored, leave router
+OUTPUT traffic alone, and omit broad fallback routes when a capture
+policy is present. Limit cleanup to the policy's own rule priorities so
+stopping interception preserves adjacent Tailscale rules.
 ---
  redirect_nftables.go       | 8 ++++++++
  redirect_nftables_rules.go | 3 ++-

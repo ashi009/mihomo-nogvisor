@@ -1,8 +1,11 @@
-From d409b82d2237c5ee7061fce460b17c67d3debf53 Mon Sep 17 00:00:00 2001
+From 9e5a4868cd28dc4c8cc361996b24545255288788 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:48:18 +0800
-Subject: [PATCH] 0002-lifecycle
+Subject: [PATCH] executor: apply and stop the native tailnet backend
 
+Tie the embedded backend to configuration reload and process shutdown so
+it cannot outlive Mihomo. Delegate backend reuse and teardown to
+component/tailnet instead of implementing them in the executor.
 ---
  hub/executor/executor.go | 6 ++++++
  1 file changed, 6 insertions(+)

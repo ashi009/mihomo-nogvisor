@@ -1,8 +1,15 @@
-From 9af9556b95ce326647a9e84cb01f9b614ca902e7 Mon Sep 17 00:00:00 2001
+From d63ad1fafaec804ed8e575dd65621ef2c92e32d3 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:48:18 +0800
-Subject: [PATCH] 0003-capture-policy
+Subject: [PATCH] listener: pass the scoped capture policy to sing-tun
 
+Unrestricted auto-route would capture traffic excluded by our router
+policy. Decode and validate capture-policy, pass it to sing-tun, and
+include it in listener equality so policy changes recreate the listener.
+
+Require nftables and mark-based routing for scoped interception. Reject
+incompatible DNS, IPv6 and global routing-mark settings before startup.
+The policy values remain in Jsonnet rather than in this hook.
 ---
  config/config.go            | 32 +++++++++++++++++++++++++-------
  listener/config/tun.go      | 20 +++++++++++++-------

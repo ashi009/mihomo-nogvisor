@@ -1,8 +1,11 @@
-From cc64b359903ce401456d45f0bd4b8b5c179b846e Mon Sep 17 00:00:00 2001
+From 9436e0b5c37cfabf59d295fad653f74966449619 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Mon, 9 Nov 2026 05:48:18 +0800
-Subject: [PATCH] 0001-config
+Subject: [PATCH] config: load native tailnet settings
 
+The native backend needs the same configuration lifecycle as Mihomo.
+Decode the tailnet section and normalize it before accepting the config;
+keep validation and backend implementation in component/tailnet.
 ---
  config/config.go | 8 ++++++++
  1 file changed, 8 insertions(+)
