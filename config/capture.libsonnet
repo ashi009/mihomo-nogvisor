@@ -1,0 +1,43 @@
+// IPv4 proxy scope and DNS exceptions observed on cito-102.
+function(lan='192.168.20.0/24', mtu=1500) {
+  tun: {
+    enable: true,
+    device: 'utun',
+    stack: 'system',
+    mtu: mtu,
+    'auto-route': true,
+    'auto-redirect': true,
+    'auto-detect-interface': false,
+    'iproute2-table-index': 100,
+    'iproute2-rule-index': 5206,
+    'auto-redirect-input-mark': 7892,
+    'auto-redirect-output-mark': 7894,
+    'include-interface': ['br-lan', 'tailscale0'],
+    'inet6-address': [],
+    'dns-hijack': [],
+    'route-exclude-address': [
+      '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+      '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16', '224.0.0.0/3',
+    ],
+    'capture-policy': {
+      sources: [lan, '100.64.0.0/10'],
+      'dns6-sources': ['fd00::/8', 'fe80::/10'],
+      'fake-ip': '28.0.0.0/8',
+      ports: [22, 80, 443, 8080, 8443],
+      'udp-bypass': [443, 8443],
+      'dns-port': 1053,
+      'bypass-mark': 7894,
+      'bypass-gids': [7890],
+      'dns-bypass-gids': [453, 7890],
+    },
+  },
+  dns: {
+    enable: true,
+    listen: '0.0.0.0:1053',
+    ipv6: false,
+    'enhanced-mode': 'fake-ip',
+    'fake-ip-range': '28.0.0.1/8',
+    'direct-nameserver': ['127.0.0.1:53'],
+  },
+  sniffer: { enable: false },
+}

@@ -1,10 +1,17 @@
 # Native backend patch series
 
 The native build uses a pinned, clean vernesong/mihomo source archive. We keep
-our code in `native/component/tailnet`, and apply two small patches last:
+our backend in `native/component/tailnet`, and apply small patches last:
 
 - `patches/0001-config.patch`: decode and validate the `tailnet` configuration.
 - `patches/0002-lifecycle.patch`: start/reuse the backend and shut it down.
+- `patches/0003-capture-policy.patch`: decode the scoped interception policy and
+  pass it to sing-tun's automatic route/redirect implementation.
+
+`patches/sing-tun/0001-capture-policy.patch` adds hooks to pinned sing-tun
+v0.4.21. The policy implementation is owned code in `native/sing-tun`, copied
+into the disposable dependency tree by `prepare-sing-tun.sh`. Both dependency
+queues use local module replacements; no upstream source is committed here.
 
 `git apply` fails on conflicting upstream changes. There is no copied upstream
 source tree to maintain. The existing rolling-release workflow is unchanged;
@@ -36,16 +43,39 @@ native executable. Build tags are explicit in `scripts/native-tags`.
 
 ## Configuration
 
-The canonical configuration remains the parent project's Jsonnet:
+The reusable router configuration lives in this repository's Jsonnet. Supply
+the policy object (providers, groups, rules and DNS upstreams) separately:
+
+    jsonnet --tla-code-file base=/path/to/policy.json config/router.jsonnet > /tmp/router.json
+
+The existing private policy generator is also wired to these fragments:
 
     jsonnet -S ../config/native.jsonnet > /tmp/mihomo-native.yaml
 
 `native.jsonnet` composes the existing Smart configuration with
-`tailnet.libsonnet`; hostname, advertised prefixes and optional auth-key file
-are parameters. No extra UCI settings or environment variables configure the
-service. This is a development backend target, not the final ShellCrash capture
-replacement: port/fake-IP interception extensions are a separate patch series.
-Existing ShellCrash/FlClash targets keep their default behavior.
+`tailnet.libsonnet` and `capture.libsonnet`. No extra UCI settings configure the
+service. Existing ShellCrash/FlClash targets keep their default behavior.
+Private provider URLs, authentication keys, generated configs and saved node
+state are not committed. Preserve explicit empty arrays when rendering:
+`tun.inet6-address: []` disables Mihomo's default IPv6 TUN addresses, and
+`tun.dns-hijack: []` leaves scoped DNS redirect in control.
+
+The capture policy preserves 20.1's TCP/UDP ports 22/80/443/8080/8443, adds other
+ports for 28.0.0.0/8 fake-IP destinations, then bypasses UDP 443/8443 even for
+fake IPs. Reserved/private destinations bypass capture. IPv4 LAN/tailnet source
+ranges and IPv6 DNS source ranges remain explicit in Jsonnet. DNS redirects to
+1053 before destination/port exclusions; router-originated traffic is not
+captured. CN traffic stays subject to the existing Mihomo rules.
+
+Mihomo owns the routing mark through auto-redirect; do not set the global
+`routing-mark`. The core installs table 100 and priorities 5206–5208 before
+Tailscale's rules. It retains sing-tun's local-address exclusions and fw4
+integration, including TUN acceptance before flow offload. Policy exclusions
+also run before UDP conntrack mark restoration. Cleanup is limited to the three
+owned rule priorities; neighbouring Tailscale and system fallback rules survive
+TUN recreation, restart and shutdown. No nft or ip command wrapper
+implements interception; the compiled core uses netlink. The existing fw4
+helper reloads its generated include when starting and stopping.
 
 Enrollment is interactive through the logged login URL unless `auth-key-file`
 is supplied. The file and state directory must be under Mihomo's home directory.
@@ -85,10 +115,15 @@ its DNS listener, TSMP/ICMP traffic and SIGTERM cleanup. The traffic check
 reproduced the stripped-build panic before the dependency patch and passed
 afterward. The test uses nftables, matching 20.1's selected firewall backend.
 
-The advertised test address is on the container's loopback interface. These
-results do not establish two-interface LAN forwarding, OpenWrt fw4 reload,
-real WAN reconnection, ACL matrices, IPv6, offload, throughput or RSS. Those
-remain acceptance work for deployment.
+The tailnet-only fixture uses a loopback destination. A separate privileged,
+network-isolated container creates client and target namespaces for actual
+forwarding. Its shipping-binary tests cover every selected port, fake-IP
+precedence, UDP exceptions, private destinations, source scope, router output,
+IPv6 bypass, IPv4/IPv6 TCP/UDP DNS interception, successful TCP/UDP forwarding,
+config/firewall reload, TUN recreation, forced-kill restart and cleanup. A
+regression fixture protects foreign routing rules at priorities 5210 and 32768;
+the previous cleanup failed it and the narrowed cleanup passes. The privileged flag
+is confined to this disposable Linux test container.
 
 ## 20.1 trial, 2026-11-08
 
@@ -104,5 +139,29 @@ The first trial exposed the no-netstack panic fixed in the dependency patch.
 The corrected Linux regression and router trial passed. This exercised router
 addresses, not forwarding to a separate LAN host, and did not replace ShellCrash
 transparent capture. Original services were restored after the trial. The
-stripped ARM64 executable is 40,042,622 bytes (38.19 MiB); production dependencies
-contain no gVisor, tsnet or netstack package.
+backend-only stripped ARM64 executable was 40,042,622 bytes (38.19 MiB).
+
+## Combined interception trial, 2026-11-08
+
+The final combined stripped executable is 40,042,622 bytes (38.19 MiB), with no
+gVisor, tsnet or netstack in its production dependency graph. A three-minute
+20.1 trial stopped both original services and ran the full private Jsonnet
+policy with an offline copy of the node state and provider/cache files.
+
+- Interface-bound LAN HTTPS through a router-issued fake IP returned 204 and
+  appeared in Mihomo's log; Zashboard returned 200.
+- MagicDNS worked over UDP and TCP; 10.1 reached a separate host on 20.1's LAN.
+- Real fw4 and unchanged config reloads preserved interception and DNS.
+- A follow-up trial changed TUN MTU through Jsonnet, recreated the TUN, retained
+  Tailscale's rules and peer connectivity, and returned another LAN HTTPS 204.
+- Native UDP capture reached the TUN; explicit real/fake-IP UDP 443/8443 probes
+  hit the bypass counters. TUN acceptance preceded fw4 flow offload.
+- The timed guard restored both original services and routes. The original
+  core hash matched, and temporary files and the copied identity were removed.
+
+`tests/openwrt/trial.sh` records the bounded trial procedure for cito-102. Stage
+a freshly rendered config and binary first; run the guard under procd so SSH
+loss does not prevent rollback. The router lacks veth support, so live traffic
+used a physical LAN client; Linux namespace tests remain in Docker. The candidate
+was not installed as the boot service. Long-duration stability, WAN reconnects,
+reboots, throughput and Twingate application acceptance remain unmeasured.

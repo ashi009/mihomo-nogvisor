@@ -6,6 +6,10 @@
 
 ## 为什么
 
+原生路由器候选版已加入独立补丁队列：内嵌 Tailscale 原生 TUN 后端，
+并通过 Jsonnet 配置 Mihomo 的透明代理拦截。构建、测试和 20.1 试运行记录见
+[PATCHES.md](PATCHES.md)。现有定时构建及 `latest` 发布仍使用原配方。
+
 两件事叠加，专治小内存设备：
 
 1. **去掉 `with_gvisor`** —— 该 tag 引入 tailscale 内建栈 + gvisor 用户态网络栈

@@ -1,0 +1,131 @@
+--- a/listener/config/tun.go
++++ b/listener/config/tun.go
+@@ -1,7 +1,9 @@
+ package config
+ 
+ import (
++	tun "github.com/metacubex/sing-tun"
+ 	"net/netip"
++	"reflect"
+ 
+ 	C "github.com/metacubex/mihomo/constant"
+ 
+@@ -10,12 +12,13 @@
+ )
+ 
+ type Tun struct {
+-	Enable              bool       `yaml:"enable" json:"enable"`
+-	Device              string     `yaml:"device" json:"device"`
+-	Stack               C.TUNStack `yaml:"stack" json:"stack"`
+-	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
+-	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
+-	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
++	CapturePolicy       *tun.CapturePolicy `yaml:"capture-policy" json:"capture-policy,omitempty"`
++	Enable              bool               `yaml:"enable" json:"enable"`
++	Device              string             `yaml:"device" json:"device"`
++	Stack               C.TUNStack         `yaml:"stack" json:"stack"`
++	DNSHijack           []string           `yaml:"dns-hijack" json:"dns-hijack"`
++	AutoRoute           bool               `yaml:"auto-route" json:"auto-route"`
++	AutoDetectInterface bool               `yaml:"auto-detect-interface" json:"auto-detect-interface"`
+ 
+ 	MTU                                   uint32         `yaml:"mtu" json:"mtu,omitempty"`
+ 	GSO                                   bool           `yaml:"gso" json:"gso,omitempty"`
+@@ -93,6 +96,9 @@
+ }
+ 
+ func (t *Tun) Equal(other Tun) bool {
++	if !reflect.DeepEqual(t.CapturePolicy, other.CapturePolicy) {
++		return false
++	}
+ 	if t.Enable != other.Enable {
+ 		return false
+ 	}
+--- a/config/config.go
++++ b/config/config.go
+@@ -4,6 +4,7 @@
+ 	"errors"
+ 	"fmt"
+ 	"github.com/metacubex/mihomo/component/tailnet"
++	tun "github.com/metacubex/sing-tun"
+ 	"net"
+ 	"net/netip"
+ 	"net/url"
+@@ -279,12 +280,13 @@
+ }
+ 
+ type RawTun struct {
+-	Enable              bool       `yaml:"enable" json:"enable"`
+-	Device              string     `yaml:"device" json:"device"`
+-	Stack               C.TUNStack `yaml:"stack" json:"stack"`
+-	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
+-	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
+-	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
++	CapturePolicy       *tun.CapturePolicy `yaml:"capture-policy"`
++	Enable              bool               `yaml:"enable" json:"enable"`
++	Device              string             `yaml:"device" json:"device"`
++	Stack               C.TUNStack         `yaml:"stack" json:"stack"`
++	DNSHijack           []string           `yaml:"dns-hijack" json:"dns-hijack"`
++	AutoRoute           bool               `yaml:"auto-route" json:"auto-route"`
++	AutoDetectInterface bool               `yaml:"auto-detect-interface" json:"auto-detect-interface"`
+ 
+ 	MTU        uint32 `yaml:"mtu" json:"mtu,omitempty"`
+ 	GSO        bool   `yaml:"gso" json:"gso,omitempty"`
+@@ -1696,6 +1698,21 @@
+ }
+ 
+ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
++	if err := rawTun.CapturePolicy.Validate(); err != nil {
++		return err
++	}
++	if rawTun.CapturePolicy != nil {
++		host, port, err := net.SplitHostPort(dns.Listen)
++		if err != nil || !dns.Enable || (host != "" && host != "0.0.0.0" && host != "::") || port != fmt.Sprint(rawTun.CapturePolicy.DNSPort) {
++			return fmt.Errorf("capture-policy requires DNS listening on all addresses at dns-port")
++		}
++		if general.RoutingMark != 0 {
++			return fmt.Errorf("capture-policy owns routing-mark; remove the global setting")
++		}
++	}
++	if rawTun.CapturePolicy != nil && (!rawTun.AutoRoute || !rawTun.AutoRedirect || len(rawTun.Inet6Address) > 0) {
++		return fmt.Errorf("capture-policy requires auto-route, auto-redirect and IPv4-only TUN")
++	}
+ 	tunAddressPrefix := dns.FakeIPRange
+ 	if !tunAddressPrefix.IsValid() {
+ 		tunAddressPrefix = netip.MustParsePrefix("198.18.0.1/16")
+@@ -1703,6 +1720,7 @@
+ 	tunAddressPrefix = netip.PrefixFrom(tunAddressPrefix.Addr(), 30)
+ 
+ 	general.Tun = LC.Tun{
++		CapturePolicy:       rawTun.CapturePolicy,
+ 		Enable:              rawTun.Enable,
+ 		Device:              rawTun.Device,
+ 		Stack:               rawTun.Stack,
+--- a/listener/sing_tun/server.go
++++ b/listener/sing_tun/server.go
+@@ -391,6 +391,7 @@
+ 		Inet4Address:                          options.Inet4Address,
+ 		Inet6Address:                          options.Inet6Address,
+ 		AutoRoute:                             options.AutoRoute,
++		CapturePolicy:                         options.CapturePolicy,
+ 		IPRoute2TableIndex:                    tableIndex,
+ 		IPRoute2RuleIndex:                     ruleIndex,
+ 		IPRoute2AutoRedirectFallbackRuleIndex: autoRedirectFallbackRuleIndex,
+@@ -428,6 +429,9 @@
+ 			return nil, E.New("`auto-route` is required by `auto-redirect`")
+ 		}
+ 		disableNFTables, dErr := strconv.ParseBool(os.Getenv("DISABLE_NFTABLES"))
++		if options.CapturePolicy != nil && disableNFTables {
++			return nil, E.New("capture-policy requires nftables")
++		}
+ 		l.autoRedirect, err = tun.NewAutoRedirect(tun.AutoRedirectOptions{
+ 			TunOptions:             &tunOptions,
+ 			Context:                ctx,
+@@ -445,7 +449,7 @@
+ 			return
+ 		}
+ 
+-		var markMode bool
++		markMode := options.CapturePolicy != nil
+ 		for _, routeAddressSet := range options.RouteAddressSet {
+ 			rp, loaded := rpTunnel.RuleProviders()[routeAddressSet]
+ 			if !loaded {

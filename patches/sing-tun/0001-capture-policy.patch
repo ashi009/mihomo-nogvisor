@@ -1,0 +1,86 @@
+--- a/tun.go
++++ b/tun.go
+@@ -72,6 +72,7 @@
+ )
+ 
+ type Options struct {
++	CapturePolicy                         *CapturePolicy
+ 	Name                                  string
+ 	Inet4Address                          []netip.Prefix
+ 	Inet6Address                          []netip.Prefix
+--- a/redirect_nftables.go
++++ b/redirect_nftables.go
+@@ -27,6 +27,10 @@
+ 		Family: nftables.TableFamilyINet,
+ 	})
+ 
++	if err = r.setupCapturePolicy(nft, table); err != nil {
++		return err
++	}
++
+ 	err = r.nftablesCreateAddressSets(nft, table, false)
+ 	if err != nil {
+ 		return err
+@@ -52,6 +56,9 @@
+ 	}
+ 
+ 	skipOutput := len(r.tunOptions.IncludeInterface) > 0 && !common.Contains(r.tunOptions.IncludeInterface, "lo") || common.Contains(r.tunOptions.ExcludeInterface, "lo")
++	if r.tunOptions.CapturePolicy != nil {
++		skipOutput = true
++	}
+ 	if !skipOutput {
+ 		chainOutput := nft.AddChain(&nftables.Chain{
+ 			Name:     "output",
+@@ -149,6 +156,7 @@
+ 			Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 2),
+ 			Type:     nftables.ChainTypeFilter,
+ 		})
++		r.captureExclusions(nft, table, chainPreRoutingUDP)
+ 		ipProto := &nftables.Set{
+ 			Table:     table,
+ 			Anonymous: true,
+--- a/redirect_nftables_rules.go
++++ b/redirect_nftables_rules.go
+@@ -133,6 +133,7 @@
+ }
+ 
+ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) error {
++	r.captureExclusions(nft, table, chain)
+ 	if r.tunOptions.AutoRedirectMarkMode && chain.Hooknum == nftables.ChainHookOutput {
+ 		if chain.Type == nftables.ChainTypeRoute {
+ 			ipProto := &nftables.Set{
+@@ -618,7 +619,7 @@
+ 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet6RouteAddress.ID, inet6RouteAddress.Name, nftables.TableFamilyIPv6, true)
+ 	}
+ 
+-	if len(r.tunOptions.Inet4RouteExcludeAddress) > 0 {
++	if r.tunOptions.CapturePolicy == nil && len(r.tunOptions.Inet4RouteExcludeAddress) > 0 {
+ 		inet4RouteExcludeAddress, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv4, nil, r.tunOptions.Inet4RouteExcludeAddress, false, false)
+ 		if err != nil {
+ 			return err
+--- a/tun_linux.go
++++ b/tun_linux.go
+@@ -578,6 +578,9 @@
+ 			it.Family = unix.AF_INET6
+ 			rules = append(rules, it)
+ 		}
++		if t.options.CapturePolicy != nil {
++			return rules
++		}
+ 		// Fallback rules after system default rules (32766: main, 32767: default)
+ 		// Only reached when main and default tables have no route
+ 		if p4 {
+--- a/tun_linux.go
++++ b/tun_linux.go
+@@ -989,7 +989,10 @@
+ 		for _, rule := range ruleList {
+ 			ruleStart := t.options.IPRoute2RuleIndex
+ 			ruleEnd := ruleStart + 10
+-			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd || (t.options.AutoRedirectMarkMode && rule.Priority == t.options.IPRoute2AutoRedirectFallbackRuleIndex) {
++			if t.options.CapturePolicy != nil {
++				ruleEnd = ruleStart + 2
++			}
++			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd || (t.options.CapturePolicy == nil && t.options.AutoRedirectMarkMode && rule.Priority == t.options.IPRoute2AutoRedirectFallbackRuleIndex) {
+ 				ruleToDel := netlink.NewRule()
+ 				ruleToDel.Family = rule.Family
+ 				ruleToDel.Priority = rule.Priority
