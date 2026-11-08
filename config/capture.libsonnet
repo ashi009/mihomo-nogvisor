@@ -4,6 +4,8 @@ function(lan='192.168.20.0/24', mtu=1500) {
   'log-level': 'warning',
   // Match the existing router/FlClash health-check timing semantics.
   'unified-delay': true,
+  'external-ui': 'ui',
+  'external-ui-url': 'https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip',
   tun: {
     enable: true,
     device: 'utun',
