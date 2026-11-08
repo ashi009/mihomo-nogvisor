@@ -102,7 +102,7 @@ def render(pin, head, summary, commits, go_mod, patch_paths, destination):
             f'[Complete changelog](https://github.com/{destination}/blob/{branch}/{report_path}) · '
             f'[Upstream comparison]({compare_url})\n\n'
             'The updater keeps this PR draft until native Linux checks pass. Conflicting patches remain for review; '
-            'the scheduled job does not rewrite them. Merging does not deploy to routers.\n')
+            'the updater does not rewrite them. Merging does not deploy to routers.\n')
     return updated, report_path, report, body, branch
 
 

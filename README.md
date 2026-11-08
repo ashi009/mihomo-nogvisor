@@ -9,7 +9,7 @@
 原生路由器版本已在 20.1 通过 procd 常驻：内嵌 Tailscale 原生 TUN 后端，
 通过 Jsonnet 配置透明代理拦截，替换 ShellCrash 和独立 Tailscale。
 独立上游补丁队列、构建、测试和部署记录见
-[PATCHES.md](PATCHES.md)。原生版本每日通过 PR 跟踪上游，附变更摘要及完整
+[PATCHES.md](PATCHES.md)。原生版本按需通过 PR 跟踪上游，附变更摘要及完整
 changelog，Linux 检查通过后转为待审。旧 ShellCrash `latest` 发布改为手动触发。
 
 两件事叠加，专治小内存设备：
@@ -51,7 +51,7 @@ https://github.com/ashi009/mihomo-nogvisor/releases/latest/download/mihomo-linux
 
 ## 更新
 
-- 原生版本每日北京时间 09:17 检查上游并创建更新 PR；也可在 Actions 页手动触发。
+- 原生版本按需检查上游并创建更新 PR，没有定时任务；可在 Actions 页或通过 Dot 触发。
 - 旧版 `build` workflow 仅保留手动发布，不再自动跳过 PR 更新上游。
 - ShellCrash 的定时任务 111（自动更新内核）比对的是 ShellCrash 官方 `bin/version`，
   不会因本仓库更新而触发。要更新到最新，手动重新拉取自定义内核即可

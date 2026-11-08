@@ -32,8 +32,10 @@ ordinary owned Go code, rather than a patch against Tailscale internals.
 
 ## Upstream tracking
 
-`track Mihomo upstream` runs daily at 09:17 Asia/Shanghai and can be dispatched
-manually. It resolves vernesong's Alpha branch to an immutable SHA, carries
+`track Mihomo upstream` runs on demand; there is no schedule. Trigger it from
+Actions or with `gh workflow run upstream.yml --repo ashi009/mihomo-nogvisor`.
+Dot can use the same trigger when an update is wanted. It resolves vernesong's
+Alpha branch to an immutable SHA, carries
 forward the Tailscale and sing-tun versions from that revision's go.mod, and
 opens a draft PR. It never merges or deploys automatically. While an upstream
 PR remains open, subsequent runs leave its branch and any manual patch rebases
@@ -45,7 +47,7 @@ contains the complete paginated commit list, dependency changes and overlaps
 with our Mihomo patch hooks. Highlights describe upstream changes to review,
 not verified behavior. A rewritten upstream history requires manual review.
 
-The scheduled workflow calls `native Linux` directly, so its checks do not
+The update workflow calls `native Linux` directly, so its checks do not
 depend on a bot-created PR triggering another workflow. It applies all patch
 queues and runs the real native backend/capture tests on an ARM64 Linux runner.
 The exact proposed commit receives a `native-linux` status with a link to the
