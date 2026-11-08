@@ -1,8 +1,23 @@
+From cae08973222e783c80825f41e0013e5273791a00 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 05:52:16 +0800
+Subject: [PATCH] tstun: allow injected packets without netstack
+
+Native TSMP replies reach invertGSOChecksum through injectedRead even
+when the build omits netstack. The unreachable panic therefore crashes
+the native backend on injected traffic.
+
+These packets have no netstack GSO metadata. Return without checksum
+inversion when netstack is absent.
+---
+ net/tstun/wrap.go | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
 diff --git a/net/tstun/wrap.go b/net/tstun/wrap.go
+index e63dccd..8936f97 100644
 --- a/net/tstun/wrap.go
 +++ b/net/tstun/wrap.go
-@@ -1074,8 +1074,10 @@
- // offloading still expects a partial checksum.
+@@ -983,7 +983,9 @@ func stackGSOToTunGSO(pkt []byte, gso netstack_GSO) (tun.GSOOptions, error) {
  // TODO(jwhited): plumb partial checksum awareness into net/packet/checksum.
  func invertGSOChecksum(pkt []byte, gso netstack_GSO) {
  	if !buildfeatures.HasNetstack {

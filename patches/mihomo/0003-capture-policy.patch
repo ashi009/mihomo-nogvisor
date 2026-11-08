@@ -1,0 +1,159 @@
+From d63ad1fafaec804ed8e575dd65621ef2c92e32d3 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 05:48:18 +0800
+Subject: [PATCH] listener: pass the scoped capture policy to sing-tun
+
+Unrestricted auto-route would capture traffic excluded by our router
+policy. Decode and validate capture-policy, pass it to sing-tun, and
+include it in listener equality so policy changes recreate the listener.
+
+Require nftables and mark-based routing for scoped interception. Reject
+incompatible DNS, IPv6 and global routing-mark settings before startup.
+The policy values remain in Jsonnet rather than in this hook.
+---
+ config/config.go            | 32 +++++++++++++++++++++++++-------
+ listener/config/tun.go      | 20 +++++++++++++-------
+ listener/sing_tun/server.go |  6 +++++-
+ 3 files changed, 43 insertions(+), 15 deletions(-)
+
+diff --git a/config/config.go b/config/config.go
+index 2a940e9..f591c55 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -4,6 +4,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"github.com/metacubex/mihomo/component/tailnet"
++	tun "github.com/metacubex/sing-tun"
+ 	"net"
+ 	"net/netip"
+ 	"net/url"
+@@ -279,13 +280,14 @@ type RawNTP struct {
+ }
+ 
+ type RawTun struct {
+-	Enable              bool       `yaml:"enable" json:"enable"`
+-	Device              string     `yaml:"device" json:"device"`
+-	Stack               C.TUNStack `yaml:"stack" json:"stack"`
+-	DNSMode             string     `yaml:"dns-mode" json:"dns-mode"`
+-	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
+-	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
+-	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
++	CapturePolicy       *tun.CapturePolicy `yaml:"capture-policy"`
++	Enable              bool               `yaml:"enable" json:"enable"`
++	Device              string             `yaml:"device" json:"device"`
++	Stack               C.TUNStack         `yaml:"stack" json:"stack"`
++	DNSMode             string             `yaml:"dns-mode" json:"dns-mode"`
++	DNSHijack           []string           `yaml:"dns-hijack" json:"dns-hijack"`
++	AutoRoute           bool               `yaml:"auto-route" json:"auto-route"`
++	AutoDetectInterface bool               `yaml:"auto-detect-interface" json:"auto-detect-interface"`
+ 
+ 	MTU        uint32 `yaml:"mtu" json:"mtu,omitempty"`
+ 	GSO        bool   `yaml:"gso" json:"gso,omitempty"`
+@@ -1712,6 +1714,21 @@ func parseIPV6(rawCfg *RawConfig) {
+ }
+ 
+ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
++	if err := rawTun.CapturePolicy.Validate(); err != nil {
++		return err
++	}
++	if rawTun.CapturePolicy != nil {
++		host, port, err := net.SplitHostPort(dns.Listen)
++		if err != nil || !dns.Enable || (host != "" && host != "0.0.0.0" && host != "::") || port != fmt.Sprint(rawTun.CapturePolicy.DNSPort) {
++			return fmt.Errorf("capture-policy requires DNS listening on all addresses at dns-port")
++		}
++		if general.RoutingMark != 0 {
++			return fmt.Errorf("capture-policy owns routing-mark; remove the global setting")
++		}
++	}
++	if rawTun.CapturePolicy != nil && (!rawTun.AutoRoute || !rawTun.AutoRedirect || len(rawTun.Inet6Address) > 0) {
++		return fmt.Errorf("capture-policy requires auto-route, auto-redirect and IPv4-only TUN")
++	}
+ 	tunAddressPrefix := dns.FakeIPRange
+ 	if !tunAddressPrefix.IsValid() {
+ 		tunAddressPrefix = netip.MustParsePrefix("198.18.0.1/16")
+@@ -1719,6 +1736,7 @@ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
+ 	tunAddressPrefix = netip.PrefixFrom(tunAddressPrefix.Addr(), 30)
+ 
+ 	general.Tun = LC.Tun{
++		CapturePolicy:       rawTun.CapturePolicy,
+ 		Enable:              rawTun.Enable,
+ 		Device:              rawTun.Device,
+ 		Stack:               rawTun.Stack,
+diff --git a/listener/config/tun.go b/listener/config/tun.go
+index 3cfa17a..cc38612 100644
+--- a/listener/config/tun.go
++++ b/listener/config/tun.go
+@@ -1,7 +1,9 @@
+ package config
+ 
+ import (
++	tun "github.com/metacubex/sing-tun"
+ 	"net/netip"
++	"reflect"
+ 
+ 	C "github.com/metacubex/mihomo/constant"
+ 
+@@ -10,13 +12,14 @@ import (
+ )
+ 
+ type Tun struct {
+-	Enable              bool       `yaml:"enable" json:"enable"`
+-	Device              string     `yaml:"device" json:"device"`
+-	Stack               C.TUNStack `yaml:"stack" json:"stack"`
+-	DNSMode             string     `yaml:"dns-mode" json:"dns-mode"`
+-	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
+-	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
+-	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
++	CapturePolicy       *tun.CapturePolicy `yaml:"capture-policy" json:"capture-policy,omitempty"`
++	Enable              bool               `yaml:"enable" json:"enable"`
++	Device              string             `yaml:"device" json:"device"`
++	Stack               C.TUNStack         `yaml:"stack" json:"stack"`
++	DNSMode             string             `yaml:"dns-mode" json:"dns-mode"`
++	DNSHijack           []string           `yaml:"dns-hijack" json:"dns-hijack"`
++	AutoRoute           bool               `yaml:"auto-route" json:"auto-route"`
++	AutoDetectInterface bool               `yaml:"auto-detect-interface" json:"auto-detect-interface"`
+ 
+ 	MTU                                   uint32         `yaml:"mtu" json:"mtu,omitempty"`
+ 	GSO                                   bool           `yaml:"gso" json:"gso,omitempty"`
+@@ -98,6 +101,9 @@ func (t *Tun) Sort() {
+ }
+ 
+ func (t *Tun) Equal(other Tun) bool {
++	if !reflect.DeepEqual(t.CapturePolicy, other.CapturePolicy) {
++		return false
++	}
+ 	if t.Enable != other.Enable {
+ 		return false
+ 	}
+diff --git a/listener/sing_tun/server.go b/listener/sing_tun/server.go
+index 5415b25..c999e53 100644
+--- a/listener/sing_tun/server.go
++++ b/listener/sing_tun/server.go
+@@ -398,6 +398,7 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
+ 		Inet6Address:                          options.Inet6Address,
+ 		DNSMode:                               options.DNSMode,
+ 		AutoRoute:                             options.AutoRoute,
++		CapturePolicy:                         options.CapturePolicy,
+ 		IPRoute2TableIndex:                    tableIndex,
+ 		IPRoute2RuleIndex:                     ruleIndex,
+ 		IPRoute2AutoRedirectFallbackRuleIndex: autoRedirectFallbackRuleIndex,
+@@ -436,6 +437,9 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
+ 			return nil, E.New("`auto-route` is required by `auto-redirect`")
+ 		}
+ 		disableNFTables, dErr := strconv.ParseBool(os.Getenv("DISABLE_NFTABLES"))
++		if options.CapturePolicy != nil && disableNFTables {
++			return nil, E.New("capture-policy requires nftables")
++		}
+ 		l.autoRedirect, err = tun.NewAutoRedirect(tun.AutoRedirectOptions{
+ 			TunOptions:             &tunOptions,
+ 			Context:                ctx,
+@@ -453,7 +457,7 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
+ 			return
+ 		}
+ 
+-		var markMode bool
++		markMode := options.CapturePolicy != nil
+ 		for _, routeAddressSet := range options.RouteAddressSet {
+ 			rp, loaded := rpTunnel.RuleProviders()[routeAddressSet]
+ 			if !loaded {

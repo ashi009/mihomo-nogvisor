@@ -1,0 +1,412 @@
+From 031303e7864a8038a0019ddea081d71d6f4d9a02 Mon Sep 17 00:00:00 2001
+From: wwqgtxx <wwqgtxx@gmail.com>
+Date: Mon, 9 Nov 2026 06:39:37 +0800
+Subject: [PATCH] net: add an embedding DNS lookup hook
+
+Embedded Tailscale needs to resolve control and relay hosts through the
+application's resolver. Thread an optional lookup hook through its DNS
+clients and retain lookup errors without falling back to other resolvers.
+
+Port MetaCubeX/tailscale ab8269766d9e62deebd7320368c9b567e6fb6b63
+with canonical tailscale.com and standard crypto/tls imports. Preserve
+the hook's fallback semantics and tests.
+---
+ control/controlclient/direct.go  |  2 ++
+ ipn/ipnlocal/local.go            |  1 +
+ net/dnscache/dnscache.go         |  9 ++++--
+ net/dnscache/export.go           | 12 ++++++++
+ net/dnscache/lookup_hook_test.go | 47 ++++++++++++++++++++++++++++++++
+ net/netcheck/netcheck.go         | 24 ++++++----------
+ net/tsdial/tsdial.go             | 24 +++++++++++-----
+ tsd/tsd.go                       |  5 ++++
+ tsnet/tsnet.go                   |  8 ++++++
+ wgengine/magicsock/magicsock.go  |  5 ++++
+ wgengine/userspace.go            |  6 ++++
+ 11 files changed, 118 insertions(+), 25 deletions(-)
+ create mode 100644 net/dnscache/export.go
+ create mode 100644 net/dnscache/lookup_hook_test.go
+
+diff --git a/control/controlclient/direct.go b/control/controlclient/direct.go
+index 8ac6356..da4364f 100644
+--- a/control/controlclient/direct.go
++++ b/control/controlclient/direct.go
+@@ -155,6 +155,7 @@ type Options struct {
+ 	C2NHandler           http.Handler        // or nil
+ 	ControlKnobs         *controlknobs.Knobs // or nil to ignore
+ 	Bus                  *eventbus.Bus       // non-nil, for setting up publishers
++	LookupHook           dnscache.LookupHookFunc
+ 
+ 	SkipStartForTests bool // if true, don't call [Auto.Start] to avoid any background goroutines (for tests only)
+ 
+@@ -336,6 +337,7 @@ func NewDirect(opts Options) (*Direct, error) {
+ 		UseLastGood:      true,
+ 		LookupIPFallback: dnsfallback.MakeLookupFunc(opts.Logf, netMon),
+ 		Logf:             opts.Logf,
++		LookupHook:       opts.LookupHook,
+ 	}
+ 
+ 	httpc := opts.HTTPTestClient
+diff --git a/ipn/ipnlocal/local.go b/ipn/ipnlocal/local.go
+index d5d8d8f..8b9b806 100644
+--- a/ipn/ipnlocal/local.go
++++ b/ipn/ipnlocal/local.go
+@@ -3226,6 +3226,7 @@ func (b *LocalBackend) startLocked(opts ipn.Options) error {
+ 		Shutdown:             ccShutdown,
+ 		Bus:                  b.sys.Bus.Get(),
+ 		StartPaused:          b.shouldPauseControlClientLocked(prefs),
++		LookupHook:           b.sys.LookupHook,
+ 	})
+ 	if err != nil {
+ 		return err
+diff --git a/net/dnscache/dnscache.go b/net/dnscache/dnscache.go
+index 6aac8e7..295a837 100644
+--- a/net/dnscache/dnscache.go
++++ b/net/dnscache/dnscache.go
+@@ -73,6 +73,9 @@ type Resolver struct {
+ 	// to use if Forward returns an error or no results.
+ 	LookupIPFallback func(ctx context.Context, host string) ([]netip.Addr, error)
+ 
++	// LookupHook, if non-nil, replaces Forward and LookupIPFallback.
++	LookupHook LookupHookFunc
++
+ 	// TTL is how long to keep entries cached
+ 	//
+ 	// If zero, a default (currently 10 minutes) is used.
+@@ -297,16 +300,18 @@ func (r *Resolver) lookupIP(ctx context.Context, host string) (ip, ip6 netip.Add
+ 	var ips []netip.Addr
+ 	if r.LookupIPForTest != nil && testenv.InTest() {
+ 		ips, err = r.LookupIPForTest(ctx, host)
++	} else if r.LookupHook != nil {
++		ips, err = r.LookupHook(lookupCtx, host)
+ 	} else {
+ 		ips, err = r.fwd().LookupNetIP(lookupCtx, "ip", host)
+ 	}
+-	if err != nil || len(ips) == 0 {
++	if (err != nil || len(ips) == 0) && r.LookupHook == nil {
+ 		if resolver, ok := r.cloudHostResolver(); ok {
+ 			r.dlogf("resolving %q via cloud resolver", host)
+ 			ips, err = resolver.LookupNetIP(lookupCtx, "ip", host)
+ 		}
+ 	}
+-	if (err != nil || len(ips) == 0) && r.LookupIPFallback != nil {
++	if (err != nil || len(ips) == 0) && r.LookupIPFallback != nil && r.LookupHook == nil {
+ 		lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
+ 		defer lookupCancel()
+ 		if err != nil {
+diff --git a/net/dnscache/export.go b/net/dnscache/export.go
+new file mode 100644
+index 0000000..7a95a56
+--- /dev/null
++++ b/net/dnscache/export.go
+@@ -0,0 +1,12 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package dnscache
++
++import (
++	"context"
++	"net/netip"
++)
++
++// LookupHookFunc resolves host through an embedding application's resolver.
++type LookupHookFunc func(ctx context.Context, host string) ([]netip.Addr, error)
+diff --git a/net/dnscache/lookup_hook_test.go b/net/dnscache/lookup_hook_test.go
+new file mode 100644
+index 0000000..0e132dc
+--- /dev/null
++++ b/net/dnscache/lookup_hook_test.go
+@@ -0,0 +1,47 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package dnscache
++
++import (
++	"context"
++	"errors"
++	"net/netip"
++	"testing"
++)
++
++func TestResolverLookupHook(t *testing.T) {
++	want := []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")}
++	r := &Resolver{
++		LookupHook: func(ctx context.Context, host string) ([]netip.Addr, error) {
++			if host != "example.com" {
++				t.Fatalf("host = %q, want example.com", host)
++			}
++			return want, nil
++		},
++	}
++	_, _, got, err := r.LookupIP(context.Background(), "example.com")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
++		t.Fatalf("LookupIP = %v, want %v", got, want)
++	}
++}
++
++func TestResolverLookupHookDoesNotFallback(t *testing.T) {
++	wantErr := errors.New("lookup failed")
++	r := &Resolver{
++		LookupHook: func(context.Context, string) ([]netip.Addr, error) {
++			return nil, wantErr
++		},
++		LookupIPFallback: func(context.Context, string) ([]netip.Addr, error) {
++			t.Fatal("LookupIPFallback called with LookupHook configured")
++			return nil, nil
++		},
++	}
++	_, _, _, err := r.LookupIP(context.Background(), "example.com")
++	if !errors.Is(err, wantErr) {
++		t.Fatalf("LookupIP error = %v, want %v", err, wantErr)
++	}
++}
+diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
+index a3f7fe3..15a1bde 100644
+--- a/net/netcheck/netcheck.go
++++ b/net/netcheck/netcheck.go
+@@ -228,6 +228,9 @@ type Client struct {
+ 	// If false, the default net.Resolver will be used, with no caching.
+ 	UseDNSCache bool
+ 
++	// LookupHook optionally specifies how non-Tailscale hostnames are resolved.
++	LookupHook dnscache.LookupHookFunc
++
+ 	// if non-zero, force this DERP region to be preferred in all reports where
+ 	// the DERP is found to be reachable.
+ 	ForcePreferredDERP int
+@@ -1665,31 +1668,20 @@ func (c *Client) nodeAddrPort(ctx context.Context, n *tailcfg.DERPNode, port int
+ 		return zero, false
+ 	}
+ 
+-	// The default lookup function if we don't set UseDNSCache is to use net.DefaultResolver.
+-	lookupIPAddr := func(ctx context.Context, host string) ([]netip.Addr, error) {
+-		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+-		if err != nil {
+-			return nil, err
+-		}
+-
+-		var naddrs []netip.Addr
+-		for _, addr := range addrs {
+-			na, ok := netip.AddrFromSlice(addr.IP)
+-			if !ok {
+-				continue
+-			}
+-			naddrs = append(naddrs, na.Unmap())
++	lookupIPAddr := c.LookupHook
++	if lookupIPAddr == nil {
++		lookupIPAddr = func(ctx context.Context, host string) ([]netip.Addr, error) {
++			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+ 		}
+-		return naddrs, nil
+ 	}
+ 
+ 	c.mu.Lock()
+ 	if c.UseDNSCache {
+ 		if c.resolver == nil {
+ 			c.resolver = &dnscache.Resolver{
+-				Forward:     net.DefaultResolver,
+ 				UseLastGood: true,
+ 				Logf:        c.logf,
++				LookupHook:  c.LookupHook,
+ 			}
+ 		}
+ 		resolver := c.resolver
+diff --git a/net/tsdial/tsdial.go b/net/tsdial/tsdial.go
+index ea2ddc6..c04b420 100644
+--- a/net/tsdial/tsdial.go
++++ b/net/tsdial/tsdial.go
+@@ -77,6 +77,9 @@ type Dialer struct {
+ 	// If nil, it's not used.
+ 	NetstackDialUDP func(context.Context, netip.AddrPort) (net.Conn, error)
+ 
++	// LookupHook optionally specifies how non-Tailscale hostnames are resolved.
++	LookupHook dnscache.LookupHookFunc
++
+ 	peerClientOnce sync.Once
+ 	peerClient     *http.Client
+ 
+@@ -424,8 +427,9 @@ func (d *Dialer) userDialResolveAll(ctx context.Context, network, addr string) (
+ 		return nil, err
+ 	}
+ 
+-	var r net.Resolver
++	var ips []netip.Addr
+ 	if buildfeatures.HasUseExitNode && buildfeatures.HasPeerAPIClient && exitDNSDoH != "" {
++		var r net.Resolver
+ 		r.PreferGo = true
+ 		r.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+ 			return &dohConn{
+@@ -435,19 +439,25 @@ func (d *Dialer) userDialResolveAll(ctx context.Context, network, addr string) (
+ 				dnsCache: d.dnsCache,
+ 			}, nil
+ 		}
++		ips, err = r.LookupNetIP(ctx, ipNetOfNetwork(network), host)
++	} else if d.LookupHook != nil {
++		ips, err = d.LookupHook(ctx, host)
++	} else {
++		ips, err = net.DefaultResolver.LookupNetIP(ctx, ipNetOfNetwork(network), host)
+ 	}
+-
+-	ips, err := r.LookupIP(ctx, ipNetOfNetwork(network), host)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 	out := make([]netip.AddrPort, 0, len(ips))
+-	for _, stdIP := range ips {
+-		ip, ok := netip.AddrFromSlice(stdIP)
+-		if !ok {
++	for _, ip := range ips {
++		ip = ip.Unmap()
++		if strings.HasSuffix(network, "4") && !ip.Is4() {
++			continue
++		}
++		if strings.HasSuffix(network, "6") && !ip.Is6() {
+ 			continue
+ 		}
+-		out = append(out, netip.AddrPortFrom(ip.Unmap(), port))
++		out = append(out, netip.AddrPortFrom(ip, port))
+ 	}
+ 	if len(out) == 0 {
+ 		return nil, fmt.Errorf("DNS lookup returned no results for %q", host)
+diff --git a/tsd/tsd.go b/tsd/tsd.go
+index 98b6a6b..e2db498 100644
+--- a/tsd/tsd.go
++++ b/tsd/tsd.go
+@@ -29,6 +29,7 @@
+ 	"tailscale.com/ipn"
+ 	"tailscale.com/ipn/conffile"
+ 	"tailscale.com/net/dns"
++	"tailscale.com/net/dnscache"
+ 	"tailscale.com/net/netmon"
+ 	"tailscale.com/net/tsdial"
+ 	"tailscale.com/net/tstun"
+@@ -75,6 +76,10 @@ type System struct {
+ 	// It is plumbed through to tlsdial.Config via tls.Config.RootCAs.
+ 	ExtraRootCAs *x509.CertPool
+ 
++	// LookupHook, if non-nil, resolves non-Tailscale hostnames through the
++	// embedding application's resolver.
++	LookupHook dnscache.LookupHookFunc
++
+ 	// InitialConfig is initial server config, if any.
+ 	// It is nil if the node is not in declarative mode.
+ 	// This value is never updated after startup.
+diff --git a/tsnet/tsnet.go b/tsnet/tsnet.go
+index 14a35cb..4ca3ec2 100644
+--- a/tsnet/tsnet.go
++++ b/tsnet/tsnet.go
+@@ -180,6 +180,7 @@
+ 	"tailscale.com/logpolicy"
+ 	"tailscale.com/logtail"
+ 	"tailscale.com/logtail/filch"
++	"tailscale.com/net/dnscache"
+ 	"tailscale.com/net/memnet"
+ 	"tailscale.com/net/netmon"
+ 	"tailscale.com/net/proxymux"
+@@ -297,6 +298,10 @@ type Server struct {
+ 	// field at zero unless you know what you are doing.
+ 	Port uint16
+ 
++	// LookupHook optionally specifies how tsnet resolves non-Tailscale
++	// infrastructure hostnames such as control and DERP.
++	LookupHook dnscache.LookupHookFunc
++
+ 	// AdvertiseTags specifies tags that should be applied to this node, for
+ 	// purposes of ACL enforcement. These can be referenced from the ACL policy
+ 	// document. Note that advertising a tag on the client doesn't guarantee
+@@ -834,6 +839,7 @@ func (s *Server) start() (reterr error) {
+ 
+ 	sys := tsd.NewSystem()
+ 	s.sys = sys
++	sys.LookupHook = s.LookupHook
+ 	if err := s.startLogger(&closePool, sys.HealthTracker.Get(), tsLogf); err != nil {
+ 		return err
+ 	}
+@@ -845,6 +851,7 @@ func (s *Server) start() (reterr error) {
+ 	closePool.add(s.netMon)
+ 
+ 	s.dialer = &tsdial.Dialer{Logf: tsLogf} // mutated below (before used)
++	s.dialer.LookupHook = s.LookupHook
+ 	s.dialer.SetBus(sys.Bus.Get())
+ 	eng, err := wgengine.NewUserspaceEngine(tsLogf, wgengine.Config{
+ 		Tun:           s.Tun,
+@@ -852,6 +859,7 @@ func (s *Server) start() (reterr error) {
+ 		ListenPort:    s.Port,
+ 		NetMon:        s.netMon,
+ 		Dialer:        s.dialer,
++		LookupHook:    s.LookupHook,
+ 		SetSubsystem:  sys.Set,
+ 		ControlKnobs:  sys.ControlKnobs(),
+ 		HealthTracker: sys.HealthTracker.Get(),
+diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
+index 16e988c..fe9d2ef 100644
+--- a/wgengine/magicsock/magicsock.go
++++ b/wgengine/magicsock/magicsock.go
+@@ -38,6 +38,7 @@
+ 	"tailscale.com/hostinfo"
+ 	"tailscale.com/ipn/ipnstate"
+ 	"tailscale.com/net/batching"
++	"tailscale.com/net/dnscache"
+ 	"tailscale.com/net/netcheck"
+ 	"tailscale.com/net/neterror"
+ 	"tailscale.com/net/netmon"
+@@ -490,6 +491,9 @@ type Options struct {
+ 	// for TLS connections to DERP servers.
+ 	ExtraRootCAs *x509.CertPool
+ 
++	// LookupHook optionally specifies how non-Tailscale hostnames are resolved.
++	LookupHook dnscache.LookupHookFunc
++
+ 	// DERPAppName, if non-empty, is an opaque app name string to
+ 	// advertise to DERP servers for stats purposes.
+ 	DERPAppName string
+@@ -724,6 +728,7 @@ func NewConn(opts Options) (*Conn, error) {
+ 		SkipExternalNetwork: inTest(),
+ 		PortMapper:          c.portMapper,
+ 		UseDNSCache:         true,
++		LookupHook:          opts.LookupHook,
+ 	}
+ 
+ 	c.metrics = registerMetrics(opts.Metrics)
+diff --git a/wgengine/userspace.go b/wgengine/userspace.go
+index c9bae72..94394f5 100644
+--- a/wgengine/userspace.go
++++ b/wgengine/userspace.go
+@@ -31,6 +31,7 @@
+ 	"tailscale.com/ipn/ipnstate"
+ 	"tailscale.com/net/dns"
+ 	"tailscale.com/net/dns/resolver"
++	"tailscale.com/net/dnscache"
+ 	"tailscale.com/net/ipset"
+ 	"tailscale.com/net/netmon"
+ 	"tailscale.com/net/packet"
+@@ -206,6 +207,9 @@ type Config struct {
+ 	// If nil, a new Dialer is created.
+ 	Dialer *tsdial.Dialer
+ 
++	// LookupHook optionally specifies how non-Tailscale hostnames are resolved.
++	LookupHook dnscache.LookupHookFunc
++
+ 	// ExtraRootCAs, if non-nil, specifies additional trusted root CAs for TLS
+ 	// connections (e.g. DERP). Passed through to magicsock.
+ 	ExtraRootCAs *x509.CertPool
+@@ -331,6 +335,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error)
+ 	}
+ 	if conf.Dialer == nil {
+ 		conf.Dialer = &tsdial.Dialer{Logf: logf}
++		conf.Dialer.LookupHook = conf.LookupHook
+ 		if conf.EventBus != nil {
+ 			conf.Dialer.SetBus(conf.EventBus)
+ 		}
+@@ -430,6 +435,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error)
+ 		NetMon:         e.netMon,
+ 		HealthTracker:  e.health,
+ 		ExtraRootCAs:   conf.ExtraRootCAs,
++		LookupHook:     conf.LookupHook,
+ 		DERPAppName:    conf.DERPAppName,
+ 		Metrics:        conf.Metrics,
+ 		ControlKnobs:   conf.ControlKnobs,

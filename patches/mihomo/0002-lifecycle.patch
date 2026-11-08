@@ -1,0 +1,43 @@
+From 9e5a4868cd28dc4c8cc361996b24545255288788 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 05:48:18 +0800
+Subject: [PATCH] executor: apply and stop the native tailnet backend
+
+Tie the embedded backend to configuration reload and process shutdown so
+it cannot outlive Mihomo. Delegate backend reuse and teardown to
+component/tailnet instead of implementing them in the executor.
+---
+ hub/executor/executor.go | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/hub/executor/executor.go b/hub/executor/executor.go
+index 8b64e4f..6d9863a 100644
+--- a/hub/executor/executor.go
++++ b/hub/executor/executor.go
+@@ -2,6 +2,7 @@ package executor
+ 
+ import (
+ 	"fmt"
++	"github.com/metacubex/mihomo/component/tailnet"
+ 	"net"
+ 	"net/netip"
+ 	"os"
+@@ -87,6 +88,10 @@ func ApplyConfig(cfg *config.Config, force bool) {
+ 	defer mux.Unlock()
+ 	log.SetLevel(cfg.General.LogLevel)
+ 
++	if err := tailnet.Apply(cfg.Tailnet); err != nil {
++		log.Errorln("[Tailnet] startup failed: %v", err)
++		return
++	}
+ 	tunnel.OnSuspend()
+ 
+ 	ca.ResetCertificate()
+@@ -551,6 +556,7 @@ func closeSmart() {
+ }
+ 
+ func Shutdown() {
++	tailnet.Shutdown()
+ 	listener.Cleanup()
+ 	tproxy.CleanupTProxyIPTables()
+ 	resolver.StoreFakePoolState()

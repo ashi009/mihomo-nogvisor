@@ -12,11 +12,11 @@ import (
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/nftables"
-	"github.com/metacubex/tailscale/wgengine/router"
-	_ "github.com/metacubex/tailscale/wgengine/router/osrouter"
 	"github.com/sagernet/netlink"
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
+	"tailscale.com/wgengine/router"
+	_ "tailscale.com/wgengine/router/osrouter"
 )
 
 // Lock is shared by supervised startup and offline cleanup. Cleanup must never
@@ -108,7 +108,7 @@ func Cleanup(path string) error {
 			name = "tailscale0"
 		}
 		router.CleanUp(func(f string, a ...any) { log.Debugln("[Native cleanup] "+f, a...) }, nil, name)
-		// The upstream cleanup entry point removes firewall rules only.
+		// Upstream cleanup does not remove the policy routing rules.
 		// Linux deletes interface routes when the TUN closes; remove its exact
 		// standard policy rules too, without touching other owners' priorities.
 		rules, err := netlink.RuleList(netlink.FAMILY_ALL)

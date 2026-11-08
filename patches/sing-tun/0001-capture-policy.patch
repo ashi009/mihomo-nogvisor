@@ -1,16 +1,28 @@
---- a/tun.go
-+++ b/tun.go
-@@ -72,6 +72,7 @@
- )
- 
- type Options struct {
-+	CapturePolicy                         *CapturePolicy
- 	Name                                  string
- 	Inet4Address                          []netip.Prefix
- 	Inet6Address                          []netip.Prefix
+From 091df00930e049103d91968524a201e5dd55ace7 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 05:52:14 +0800
+Subject: [PATCH] tun: scope automatic routing to the capture policy
+
+The router shares policy routing with Tailscale and must preserve the
+configured capture exceptions. Add hooks into the nftables and route
+lifecycle for the implementation carried in native/sing-tun.
+
+Apply exclusions before UDP connection marks are restored, leave router
+OUTPUT traffic alone, and omit broad fallback routes when a capture
+policy is present. Limit cleanup to the policy's own rule priorities so
+stopping interception preserves adjacent Tailscale rules.
+---
+ redirect_nftables.go       | 8 ++++++++
+ redirect_nftables_rules.go | 3 ++-
+ tun.go                     | 1 +
+ tun_linux.go               | 8 +++++++-
+ 4 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/redirect_nftables.go b/redirect_nftables.go
+index e6af794..9eba203 100644
 --- a/redirect_nftables.go
 +++ b/redirect_nftables.go
-@@ -27,6 +27,10 @@
+@@ -27,6 +27,10 @@ func (r *autoRedirect) setupNFTables() error {
  		Family: nftables.TableFamilyINet,
  	})
  
@@ -21,7 +33,7 @@
  	err = r.nftablesCreateAddressSets(nft, table, false)
  	if err != nil {
  		return err
-@@ -52,6 +56,9 @@
+@@ -52,6 +56,9 @@ func (r *autoRedirect) setupNFTables() error {
  	}
  
  	skipOutput := len(r.tunOptions.IncludeInterface) > 0 && !common.Contains(r.tunOptions.IncludeInterface, "lo") || common.Contains(r.tunOptions.ExcludeInterface, "lo")
@@ -31,7 +43,7 @@
  	if !skipOutput {
  		chainOutput := nft.AddChain(&nftables.Chain{
  			Name:     "output",
-@@ -149,6 +156,7 @@
+@@ -149,6 +156,7 @@ func (r *autoRedirect) setupNFTables() error {
  			Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 2),
  			Type:     nftables.ChainTypeFilter,
  		})
@@ -39,9 +51,11 @@
  		ipProto := &nftables.Set{
  			Table:     table,
  			Anonymous: true,
+diff --git a/redirect_nftables_rules.go b/redirect_nftables_rules.go
+index 87327a4..a5ee1a5 100644
 --- a/redirect_nftables_rules.go
 +++ b/redirect_nftables_rules.go
-@@ -133,6 +133,7 @@
+@@ -133,6 +133,7 @@ func (r *autoRedirect) nftablesCreateLoopbackAddressSets(
  }
  
  func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) error {
@@ -49,7 +63,7 @@
  	if r.tunOptions.AutoRedirectMarkMode && chain.Hooknum == nftables.ChainHookOutput {
  		if chain.Type == nftables.ChainTypeRoute {
  			ipProto := &nftables.Set{
-@@ -618,7 +619,7 @@
+@@ -618,7 +619,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
  		nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet6RouteAddress.ID, inet6RouteAddress.Name, nftables.TableFamilyIPv6, true)
  	}
  
@@ -58,9 +72,23 @@
  		inet4RouteExcludeAddress, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv4, nil, r.tunOptions.Inet4RouteExcludeAddress, false, false)
  		if err != nil {
  			return err
+diff --git a/tun.go b/tun.go
+index cc4fd9f..0d5f6df 100644
+--- a/tun.go
++++ b/tun.go
+@@ -80,6 +80,7 @@ const (
+ )
+ 
+ type Options struct {
++	CapturePolicy                         *CapturePolicy
+ 	Name                                  string
+ 	Inet4Address                          []netip.Prefix
+ 	Inet6Address                          []netip.Prefix
+diff --git a/tun_linux.go b/tun_linux.go
+index 3d0dd3f..57c1961 100644
 --- a/tun_linux.go
 +++ b/tun_linux.go
-@@ -578,6 +578,9 @@
+@@ -588,6 +588,9 @@ func (t *NativeTun) rules() []*netlink.Rule {
  			it.Family = unix.AF_INET6
  			rules = append(rules, it)
  		}
@@ -70,9 +98,7 @@
  		// Fallback rules after system default rules (32766: main, 32767: default)
  		// Only reached when main and default tables have no route
  		if p4 {
---- a/tun_linux.go
-+++ b/tun_linux.go
-@@ -989,7 +989,10 @@
+@@ -1005,7 +1008,10 @@ func (t *NativeTun) unsetRules() error {
  		for _, rule := range ruleList {
  			ruleStart := t.options.IPRoute2RuleIndex
  			ruleEnd := ruleStart + 10

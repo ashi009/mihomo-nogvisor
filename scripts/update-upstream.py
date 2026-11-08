@@ -74,6 +74,13 @@ def dependencies(go_mod, previous):
     return result
 
 
+def mihomo_patch_paths(root):
+    paths = set()
+    for patch in (root / 'patches' / 'mihomo').glob('*.patch'):
+        paths.update(re.findall(r'^\+\+\+ b/(.+)$', patch.read_text(), re.M))
+    return paths
+
+
 def render(pin, head, summary, commits, go_mod, patch_paths, destination):
     repo, old, new = pin['repository'], pin['revision'], head['sha']
     updated = dict(pin, revision=new, dependencies=dependencies(go_mod, pin['dependencies']))
@@ -125,9 +132,7 @@ def main():
         summary, commits = comparison(repo, pin['revision'], head['sha'])
         module = api(f'repos/{repo}/contents/go.mod?ref={head["sha"]}')
         go_mod = base64.b64decode(module['content']).decode()
-        patch_paths = set()
-        for patch in (args.root / 'patches').glob('*.patch'):
-            patch_paths.update(re.findall(r'^\+\+\+ b/(.+)$', patch.read_text(), re.M))
+        patch_paths = mihomo_patch_paths(args.root)
         updated, report_path, report, body, branch = render(pin, head, summary, commits, go_mod, patch_paths, os.environ.get('GITHUB_REPOSITORY', 'ashi009/mihomo-nogvisor'))
         pin_path.write_text(json.dumps(updated, indent=2) + '\n')
         target = args.root / report_path
