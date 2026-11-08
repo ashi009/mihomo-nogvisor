@@ -1,6 +1,7 @@
 # Native backend patch series
 
-The native build uses a pinned, clean vernesong/mihomo source archive. We keep
+The native build uses a pinned, clean vernesong/mihomo source archive. The core
+revision and patched dependency versions live in `upstream.json`. We keep
 our backend in `native/component/tailnet`, and apply small patches last:
 
 - `patches/0001-config.patch`: decode and validate the `tailnet` configuration.
@@ -10,25 +11,51 @@ our backend in `native/component/tailnet`, and apply small patches last:
 - `patches/0004-service-lifecycle.patch`: lock supervised instances, clean stale
   network state, and exit on backend, DNS or interception startup failure.
 
-`patches/sing-tun/0001-capture-policy.patch` adds hooks to pinned sing-tun
-v0.4.21. The policy implementation is owned code in `native/sing-tun`, copied
+`patches/sing-tun/0001-capture-policy.patch` adds hooks to the pinned sing-tun.
+The policy implementation is owned code in `native/sing-tun`, copied
 into the disposable dependency tree by `prepare-sing-tun.sh`. Both dependency
 queues use local module replacements; no upstream source is committed here.
 
 `git apply` fails on conflicting upstream changes. There is no copied upstream
-source tree to maintain. The existing rolling-release workflow is unchanged;
-these scripts build the native candidate separately. Production publication
-should be switched only after router acceptance.
+source tree to maintain. The legacy ShellCrash release is manual-only;
+native PR checks upload candidate artifacts without deploying to routers.
 
 Prepare a new directory, then build (Go 1.26.5):
 
-    scripts/prepare-native.sh /tmp/mihomo-native-work
-    scripts/build-native.sh /tmp/mihomo-native-work/mihomo-87d7a4365ac4f65474f573ba68dce1ee47e22e6d /tmp/mihomo-native
+    source=$(scripts/prepare-native.sh /tmp/mihomo-native-work)
+    scripts/build-native.sh "$source" /tmp/mihomo-native
 
-For an upstream update, change the revision in `prepare-native.sh`, reapply the
+For an upstream update, change the revision in `upstream.json`, reapply the
 patches to the clean revision, update dependency pins only where needed, and run
 the Linux tests. Keep changes to each hook in its own patch. The component is
 ordinary owned Go code, rather than a patch against Tailscale internals.
+
+## Upstream tracking
+
+`track Mihomo upstream` runs daily at 09:17 Asia/Shanghai and can be dispatched
+manually. It resolves vernesong's Alpha branch to an immutable SHA, carries
+forward the Tailscale and sing-tun versions from that revision's go.mod, and
+opens a draft PR. It never merges or deploys automatically. While an upstream
+PR remains open, subsequent runs leave its branch and any manual patch rebases
+untouched. A closed PR suppresses another proposal for that same revision.
+
+The PR highlights selected upstream commit subjects for Smart, reliability,
+DNS/routing and protocols, with links to each commit. `updates/<revision>.md`
+contains the complete paginated commit list, dependency changes and overlaps
+with our Mihomo patch hooks. Highlights describe upstream changes to review,
+not verified behavior. A rewritten upstream history requires manual review.
+
+The scheduled workflow calls `native Linux` directly, so its checks do not
+depend on a bot-created PR triggering another workflow. It applies all patch
+queues and runs the real native backend/capture tests on an ARM64 Linux runner.
+The exact proposed commit receives a `native-linux` status with a link to the
+run; passing checks mark the PR ready, failures leave it draft. Normal PRs and
+main pushes also run native checks. No write token is exposed to the build job.
+
+Repository Actions settings must permit workflows to create PRs. Only the
+proposal/report jobs request write permissions. Build artifacts identify both
+the upstream and local patch revision in their version string. The workflow
+keeps logs, the binary and its checksum as run artifacts.
 
 One dependency fix is maintained separately in `patches/tailscale/`.
 `prepare-tailscale.sh` copies the pinned module into the disposable build
@@ -91,6 +118,10 @@ The backend registers `tailscale://tailnet` with Mihomo DNS. Jsonnet sends
 `+.ts.net` there and retains its fake-IP exclusion. Bootstrap lookups use
 Mihomo's proxy-host resolver, and return a retryable error until it is ready.
 The backend leaves OS DNS configuration untouched.
+
+Jsonnet also fixes the dashboard path and update source to Zashboard's stable
+`dist-no-fonts.zip`, which uses system fonts. The dashboard update button calls
+Mihomo's configured URL; omitting it would install MetaCubeXD instead.
 
 An unchanged configuration reload preserves the running backend. Changes to
 backend settings require restart. Native startup failures terminate the process

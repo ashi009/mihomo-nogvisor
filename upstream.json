@@ -1,0 +1,9 @@
+{
+  "repository": "vernesong/mihomo",
+  "branch": "Alpha",
+  "revision": "87d7a4365ac4f65474f573ba68dce1ee47e22e6d",
+  "dependencies": {
+    "github.com/metacubex/tailscale": "v0.0.0-20260623094802-1ab893d4162c",
+    "github.com/metacubex/sing-tun": "v0.4.21"
+  }
+}

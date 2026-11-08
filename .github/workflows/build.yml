@@ -6,12 +6,7 @@ name: build
 # 并软链，运行时 file-backed 可回收(RssShmem 0)。详见 juewuy/ShellCrash#1304 / #1305。
 
 on:
-  schedule:
-    - cron: '0 4 * * *'        # 每日追一次上游
-  workflow_dispatch:            # 手动触发
-  push:
-    paths:
-      - '.github/workflows/build.yml'
+  workflow_dispatch:            # Legacy ShellCrash release; manual only.
 
 permissions:
   contents: write               # 建 release 需要

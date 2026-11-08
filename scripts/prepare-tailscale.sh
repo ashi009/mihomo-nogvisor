@@ -8,7 +8,7 @@ mkdir -p "$dest"
 dest=$(CDPATH= cd -- "$dest" && pwd)
 cd "$src"
 module=github.com/metacubex/tailscale
-version=v0.0.0-20260623094802-1ab893d4162c
+version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependencies"][sys.argv[2]])' "$repo/upstream.json" "$module")
 go mod download "$module@$version"
 cached=$(go list -m -f '{{.Dir}}' "$module@$version")
 cp -R "$cached/." "$dest/"
