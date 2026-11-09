@@ -1,9 +1,9 @@
 From: ashi009 <ashi009@users.noreply.github.com>
-Subject: [PATCH] tun: defer fw4 permissions to package-managed zones
+Subject: [PATCH] tun: defer fw4 permissions to APK-script-managed zones
 
-When the capture policy declares package-managed fw4 permissions, do not
-install broad input and forwarding accepts around the TUN. Retain cleanup
-of an old include so upgrades remove the previous integration.
+The APK scripts install fixed UCI zones and LAN forwarding permissions.
+When the capture policy selects this integration, omit the broad fw4
+accepts around the TUN. Retain cleanup of an old include on shutdown.
 ---
 diff --git a/redirect_nftables_rules_openwrt.go b/redirect_nftables_rules_openwrt.go
 --- a/redirect_nftables_rules_openwrt.go

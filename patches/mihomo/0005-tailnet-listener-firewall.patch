@@ -1,9 +1,14 @@
 From: ashi009 <ashi009@users.noreply.github.com>
 Subject: [PATCH] config: protect Mihomo listeners from tailnet access
 
-LAN-only subnet routing must not expose the router's explicit proxy or
-configuration API as another path to the Internet. Derive protected ports
-from the actual listener configuration before normalizing the tailnet.
+The tailnet zone accepts router-local input to preserve management access.
+Restricting forwarding to LAN does not block a connection to Mihomo's
+explicit proxy: the proxy opens its own outbound connection.
+
+With protect-listeners enabled, deny tailnet access to Mihomo's proxy, DNS
+and controller listeners. Derive ports from the parsed configuration so
+UCI does not duplicate them. The option defaults to false; our Jsonnet
+explicitly enables it.
 ---
 diff --git a/config/config.go b/config/config.go
 --- a/config/config.go
