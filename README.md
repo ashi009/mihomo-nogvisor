@@ -1,70 +1,66 @@
 # mihomo-nogvisor
 
-自动构建 [vernesong/mihomo](https://github.com/vernesong/mihomo) 的 **Alpha (smart)** 分支，
-去掉 `with_gvisor` build tag，产出裸 `linux/arm64` 二进制，供 ShellCrash 在
-内存受限的 OpenWrt 路由器上使用。
+面向 OpenWrt 的单进程 Mihomo Smart + Tailscale 原生路由服务。
+使用内核 TUN，不引入 gVisor；通过 Jsonnet 生成配置，procd 管理生命周期，
+Zashboard 提供运行界面。无需 ShellCrash 或独立 Tailscale/LuCI 应用。
 
-## 为什么
+## 安装
 
-原生路由器版本内嵌官方 Tailscale 原生 TUN 后端，通过 procd 管理，
-通过 Jsonnet 配置透明代理拦截，替换 ShellCrash 和独立 Tailscale。
-补丁、构建和测试入口见
-[PATCHES.md](PATCHES.md)。原生版本按需通过 PR 跟踪上游，附变更摘要及完整
-changelog，Linux 检查通过后转为待审。旧 ShellCrash `latest` 发布改为手动触发。
+[Native Linux CI](../../actions/workflows/native.yml) 的构建产物包含 ARM64 裸二进制、
+APK、校验和及体积报告。APK 面向使用 APK 3 的 OpenWrt/ImmortalWrt；
+目前不提供 opkg/IPK 包。
 
-两件事叠加，专治小内存设备：
+先把生成的配置放到 `/etc/mihomo/config.yaml`，再安装下载的 APK：
 
-1. **去掉 `with_gvisor`** —— 该 tag 引入 tailscale 内建栈 + gvisor 用户态网络栈
-   （291 个额外包，其中 195 个是 tailscale）。用真 tailscaled 做子网路由、
-   且 tun `stack: system` 的场景用不到它。二进制从约 43MB 降到约 31MB。
-
-2. **让核心从 rom 原地执行，而非解压到内存** —— OpenWrt 上 `$TMPDIR` 是 tmpfs（RAM），
-   把核心解压到那里会把整份二进制钉在不可回收的 `Shmem` 里。改为把裸二进制存于
-   `$BINDIR`（overlay/ubifs，透明压缩约 2.2:1，闪存只占约 14MB）、`$TMPDIR` 软链过去，
-   运行时代码段就是 file-backed、可回收，省下约 44MB 常驻内存。
-   参见 [juewuy/ShellCrash#1304](https://github.com/juewuy/ShellCrash/issues/1304)、
-   [#1305](https://github.com/juewuy/ShellCrash/pull/1305)。
-
-   真 upx 压缩反而更费内存：它的 stub 在 exec 时 `memfd_create` 把整个程序解压回 RAM。
-
-## 产物
-
-`latest` release 发布 `mihomo-linux-arm64.gz`（gzip 封装的裸二进制，下载约 11MB）。
-需 ShellCrash [#1305](https://github.com/juewuy/ShellCrash/pull/1305) 及以后版本 ——
-它在 tmpfs + 压缩 rom 设备上会把解出的裸二进制存于 rom 并软链，运行时 `RssShmem` 归零。
-
-## 用法
-
-在 ShellCrash 里把自定义内核链接（`custcorelink`）设为：
-
-```
-https://github.com/ashi009/mihomo-nogvisor/releases/latest/download/mihomo-linux-arm64.gz
+```sh
+apk add --allow-untrusted /tmp/mihomo-native-*.apk
 ```
 
-菜单：`crash` → 内核管理 → 自定义内核链接，粘贴上面的 URL。ShellCrash 会持久化
-`zip_type` 与 `custcorelink`，之后每次更新内核都会自动重建这套布置，无需手工干预。
+当前包未签名。安装会注册、启用 procd 服务；存在配置时自动启动。
+升级会重启原本运行的服务，保持主动停止的服务不启动。
+包不包含私有配置、订阅或身份状态，卸载也不删除这些数据。
+包定义和生命周期行为分别由 [打包脚本](scripts/package-native.sh) 和
+[APK hooks](openwrt/apk-hooks.sh) 管理。
 
-## 版本
+从旧服务迁移时，先停止 ShellCrash 和 Tailscale，将需要的规则、订阅、UI 缓存
+移到 `/etc/mihomo`，将原 Tailscale 状态目录移到配置指定的 `state-dir`。
+移除旧服务后安装 APK；已有身份不需要重新登录。
 
-版本号沿用 vernesong 的命名 `alpha-smart-<短 commit>`，通过 ldflags 打进
-`constant.Version`。rolling 的 `latest` tag 始终指向最新 commit 的构建。
+## 配置与登录
 
-## 更新
+[router.jsonnet](config/router.jsonnet) 将已有 Mihomo 配置与
+[透明代理策略](config/capture.libsonnet)、[Tailscale 配置](config/tailnet.libsonnet)
+组合。私有 Jsonnet 可以直接导入这些模块；端口例外、DNS 和路由参数均由它们生成。
 
-- 原生版本按需检查上游并创建更新 PR，没有定时任务；可在 Actions 页或通过 Dot 触发。
-- 旧版 `build` workflow 仅保留手动发布，不再自动跳过 PR 更新上游。
-- ShellCrash 的定时任务 111（自动更新内核）比对的是 ShellCrash 官方 `bin/version`，
-  不会因本仓库更新而触发。要更新到最新，手动重新拉取自定义内核即可
-  （`custcorelink` 的 URL 恒指向 `latest`）。
+新路由器可在本机用 OAuth 换取一次性、非临时节点的 auth key。
+OAuth 客户端需要 `auth_keys` 权限及相应的 tags，见
+[Tailscale OAuth 文档](https://tailscale.com/docs/features/oauth-clients)。
+OAuth secret 只保存在部署机；凭据文件路径相对于生成的 `provision.json`，也可用绝对路径。
 
-## 构建配方
-
-与 vernesong 官方一致，仅去掉 `-tags with_gvisor`，产物再 gzip：
-
+```sh
+jsonnet config/provision.jsonnet \
+  --tla-str clientId=YOUR_CLIENT_ID \
+  --tla-str clientSecretFile=/private/path/oauth.secret \
+  --tla-code 'tags=["tag:router"]' > provision.json
+python3 scripts/provision-tailnet.py provision.json secrets/tailnet.key
 ```
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOARM64=v8.0 \
-  go build -trimpath \
-    -ldflags '-X "github.com/metacubex/mihomo/constant.Version=alpha-smart-<hash>" -w -s -buildid=' \
-    -o mihomo-linux-arm64 .
-gzip -c -9 mihomo-linux-arm64 > mihomo-linux-arm64.gz
-```
+
+该脚本在本机运行版本锁定的官方 `get-authkey`，需要 Go 和网络访问。
+它只写出权限为 0600 的节点 auth key，不覆盖已有文件，也不打印密钥。
+将该文件单独传到路由器 `/etc/mihomo/secrets/tailnet.key`，保持目录 0700、文件 0600，
+并通过 Jsonnet 的 `authKeyFile='secrets/tailnet.key'` 引用。
+路由器自行生成并保存身份状态。首次登录后若要删除已使用的 key 文件，
+先从 Jsonnet 清空 `authKeyFile` 并重新生成配置。
+
+## 开发与更新
+
+[PATCHES.md](PATCHES.md) 索引上游版本、独立补丁、构建与 Linux 测试入口；
+补丁的原因和来源保留在各自文件头。构建标签由 [native-tags](scripts/native-tags) 管理。
+二进制从 overlay 直接执行，避免将完整核心解压并常驻 tmpfs。
+
+[上游更新 workflow](.github/workflows/upstream.yml) 按需触发，生成含 changelog 的 PR，
+不定时运行，也不自动合并。Native CI 验证 Linux 路由/DNS、APK 安装与升级生命周期，
+并报告裸二进制、gzip 和 APK 的大小。
+
+旧 ShellCrash 用的 [latest release](../../releases/tag/latest) 仍保留手动发布；
+它与原生服务 APK 是不同产物。
