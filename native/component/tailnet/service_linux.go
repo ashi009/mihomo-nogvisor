@@ -13,8 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+
+	singtun "github.com/metacubex/sing-tun"
 
 	mdns "github.com/metacubex/mihomo/dns"
 	D "github.com/miekg/dns"
@@ -38,17 +41,18 @@ import (
 )
 
 type Config struct {
-	FirewallMode    string         `yaml:"firewall-mode" json:"firewall-mode"`
-	Enable          bool           `yaml:"enable" json:"enable"`
-	Name            string         `yaml:"name" json:"name"`
-	Hostname        string         `yaml:"hostname" json:"hostname"`
-	Interface       string         `yaml:"interface" json:"interface"`
-	StateDir        string         `yaml:"state-dir" json:"state-dir"`
-	ControlURL      string         `yaml:"control-url" json:"control-url"`
-	AuthKeyFile     string         `yaml:"auth-key-file" json:"auth-key-file"`
-	AdvertiseRoutes []netip.Prefix `yaml:"advertise-routes" json:"advertise-routes"`
-	AcceptRoutes    bool           `yaml:"accept-routes" json:"accept-routes"`
-	Port            uint16         `yaml:"port" json:"port"`
+	FirewallMode        string         `yaml:"firewall-mode" json:"firewall-mode"`
+	Enable              bool           `yaml:"enable" json:"enable"`
+	Name                string         `yaml:"name" json:"name"`
+	Hostname            string         `yaml:"hostname" json:"hostname"`
+	Interface           string         `yaml:"interface" json:"interface"`
+	StateDir            string         `yaml:"state-dir" json:"state-dir"`
+	ControlURL          string         `yaml:"control-url" json:"control-url"`
+	AuthKeyFile         string         `yaml:"auth-key-file" json:"auth-key-file"`
+	AdvertiseRoutes     []netip.Prefix `yaml:"advertise-routes" json:"advertise-routes"`
+	AdvertiseInterfaces []string       `yaml:"advertise-interfaces" json:"advertise-interfaces"`
+	AcceptRoutes        bool           `yaml:"accept-routes" json:"accept-routes"`
+	Port                uint16         `yaml:"port" json:"port"`
 }
 
 var mu sync.Mutex
@@ -74,7 +78,20 @@ func Normalize(c Config) (Config, error) {
 		c.StateDir = "tailnet"
 	}
 	if c.Hostname == "" {
-		return c, errors.New("tailnet hostname is required")
+		hostname, err := os.Hostname()
+		if err != nil || hostname == "" {
+			return c, fmt.Errorf("cannot determine tailnet hostname: %v", err)
+		}
+		c.Hostname = hostname
+	}
+	prefixes, err := singtun.InterfacePrefixes(c.AdvertiseInterfaces)
+	if err != nil {
+		return c, err
+	}
+	for _, prefix := range prefixes {
+		if !slices.Contains(c.AdvertiseRoutes, prefix) {
+			c.AdvertiseRoutes = append(c.AdvertiseRoutes, prefix)
+		}
 	}
 	if len(c.Interface) > 15 || strings.ContainsAny(c.Interface, " /\\") {
 		return c, errors.New("invalid tailnet interface")

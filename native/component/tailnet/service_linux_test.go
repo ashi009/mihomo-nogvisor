@@ -97,7 +97,21 @@ func TestNativeSubnetAndMagicDNS(t *testing.T) {
 	}
 	cfg := input.Tailnet
 	cfg.ControlURL = strings.Replace(control.HTTPTestServer.URL, "127.0.0.1", "control.native.test", 1)
-	cfg.StateDir = t.TempDir()
+	cfg.StateDir = "gateway"
+	cfg.Hostname = ""
+	cfg.AdvertiseRoutes = nil
+	cfg.AdvertiseInterfaces = []string{"lo"}
+	cfg, err = Normalize(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostname, _ := os.Hostname()
+	if cfg.Hostname != hostname || len(cfg.AdvertiseRoutes) != 1 || cfg.AdvertiseRoutes[0] != netip.MustParsePrefix("192.0.2.0/24") {
+		t.Fatalf("runtime identity discovery: hostname=%q routes=%v", cfg.Hostname, cfg.AdvertiseRoutes)
+	}
+	if _, err := Normalize(Config{Enable: true, AdvertiseInterfaces: []string{"missing-lan"}}); err == nil {
+		t.Fatal("missing LAN interface accepted")
+	}
 	gateway, err := Start(cfg)
 	if err != nil {
 		t.Fatal(err)

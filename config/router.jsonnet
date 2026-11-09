@@ -1,9 +1,9 @@
 local capture = import 'capture.libsonnet';
 local tailnet = import 'tailnet.libsonnet';
 // Supply provider/rule policy as base. This file contains no subscriptions or keys.
-function(base, hostname='cito-102', lan='192.168.20.0/24', stateDir='tailnet', authKeyFile='')
-  local cp = capture(lan);
-  local tn = tailnet(hostname, [lan], stateDir, authKeyFile=authKeyFile);
+function(base, lanInterfaces=['br-lan'], stateDir='tailnet', authKeyFile='')
+  local cp = capture(lanInterfaces);
+  local tn = tailnet(stateDir=stateDir, authKeyFile=authKeyFile, advertiseInterfaces=lanInterfaces);
   local dns = std.get(base, 'dns', {});
   base + cp + tn + {
     dns: dns + cp.dns + tn.dns + {

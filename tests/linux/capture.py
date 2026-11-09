@@ -196,6 +196,13 @@ try:
     assert not list(Path('/etc/nftables.d').glob('*mihomo*'))
     check_foreign_rules()
     print('PASS clean shutdown removes TUN, routes, nftables and fw4 include',flush=True)
+    missing=json.loads(json.dumps(config))
+    missing['tun']['capture-policy']['source-interfaces']=['missing-lan']
+    (home/'missing.json').write_text(json.dumps(missing))
+    failed=sp.run(['/test/mihomo','-t','-d',str(home),'-f',str(home/'missing.json')],stdout=sp.PIPE,stderr=sp.STDOUT,text=True)
+    assert failed.returncode!=0 and 'missing-lan' in failed.stdout,failed.stdout
+    assert 'table inet mihomo' not in run('nft','list','ruleset')
+    print('PASS missing LAN fails validation without installing interception',flush=True)
     occupied=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     occupied.bind(('0.0.0.0',1053));occupied.listen()
     failed=sp.Popen(['/test/mihomo','-service','-d',str(home),'-f',str(home/'config.json')],stdout=log,stderr=log)
