@@ -32,6 +32,10 @@ apk add --allow-untrusted /tmp/mihomo-native-*.apk
 [透明代理策略](config/capture.libsonnet)、[Tailscale 配置](config/tailnet.libsonnet)
 组合。私有 Jsonnet 可以直接导入这些模块；端口例外、DNS 和路由参数均由它们生成。
 
+原生捕获策略通过 `route-exclude-address-set: [cn-ip]` 将同名 IP 规则集交给
+nftables，随规则集更新同步。真实 CN-IP 目的地址直接转发，跳过 Mihomo 的规则判断；
+fake-IP 仍进入 Mihomo，CN-domain 规则也保留在那里。已有端口及 UDP 例外不变。
+
 新路由器可在本机用 OAuth 换取一次性、非临时节点的 auth key。
 OAuth 客户端需要 `auth_keys` 权限及相应的 tags，见
 [Tailscale OAuth 文档](https://tailscale.com/docs/features/oauth-clients)。

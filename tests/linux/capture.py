@@ -33,20 +33,27 @@ if len(sys.argv)>1 and sys.argv[1]=='echo':
                 try:c.settimeout(1);c.sendall(c.recv(2048))
                 except OSError:pass
                 c.close()
-    for addr in ['198.51.100.2','192.168.70.2','28.1.1.1','fd77::2']:
+    for addr in ['198.51.100.2','198.51.100.3','198.51.100.4','192.168.70.2','28.1.1.1','fd77::2']:
         for port in [22,80,443,8080,8443,18081]:
             for udp in [False,True]:threading.Thread(target=serve,args=(addr,port,udp),daemon=True).start()
     time.sleep(300)
     sys.exit()
 
-if len(sys.argv)>1 and sys.argv[1]=='probe':
+if len(sys.argv)>1 and sys.argv[1] in ['probe','flow']:
     _,_,host,port,udp,source=sys.argv
     s=socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET,socket.SOCK_DGRAM if udp=='1' else socket.SOCK_STREAM)
     s.settimeout(.6)
     if source!='-':s.bind((source,0))
-    try:
-        s.connect((host,int(port)));s.sendall(b'capture-probe');print('echo' if s.recv(64)==b'capture-probe' else 'blocked')
-    except OSError:print('blocked')
+    s.connect((host,int(port))) if udp=='1' else None
+    def probe():
+        try:
+            if udp!='1':s.connect((host,int(port)))
+            s.sendall(b'capture-probe')
+            print('echo' if s.recv(64)==b'capture-probe' else 'blocked',flush=True)
+        except OSError:print('blocked',flush=True)
+    if sys.argv[1]=='flow':
+        for _ in sys.stdin:probe()
+    else:probe()
     sys.exit()
 
 if len(sys.argv)>1 and sys.argv[1]=='dns':
@@ -76,7 +83,7 @@ for name,dev,local,remote in [('client','br-lan','10.66.0.1/24','10.66.0.2/24'),
     ns(name,'ip','route','add','default','via',local.split('/')[0])
 ns('client','ip','addr','add','10.67.0.2/24','dev','br-lanpeer')
 ip('route','add','10.67.0.0/24','dev','br-lan')
-for prefix in ['198.51.100.2/32','192.168.70.2/32','28.1.1.1/32']:ns('target','ip','addr','add',prefix,'dev','lo');ip('route','add',prefix,'via','203.0.113.2')
+for prefix in ['198.51.100.2/32','198.51.100.3/32','198.51.100.4/32','192.168.70.2/32','28.1.1.1/32']:ns('target','ip','addr','add',prefix,'dev','lo');ip('route','add',prefix,'via','203.0.113.2')
 for namespace,device,addr in [(None,'br-lan','fd66::1/64'),('client','br-lanpeer','fd66::2/64'),(None,'wan','fd77::1/64'),('target','wanpeer','fd77::2/64')]:
     args=['ip','-6','addr','add',addr,'dev',device,'nodad'];ns(namespace,*args) if namespace else run(*args)
 ns('client','ip','-6','route','add','default','via','fd66::1');ns('target','ip','-6','route','add','default','via','fd77::1')
@@ -96,6 +103,22 @@ home=Path('/tmp/capture');home.mkdir()
 config=json.loads(Path('/test/capture.json').read_text());(home/'config.json').write_text(json.dumps(config))
 log=(home/'core.log').open('w+')
 core=None
+flow=None
+(home/'cn-ip.yaml').write_text('payload: []\n')
+def update_bypass(prefixes):
+    (home/'cn-ip.yaml').write_text('payload:\n' + ''.join('  - '+prefix+'\n' for prefix in prefixes))
+    run('curl','-fsS','-X','PUT','http://127.0.0.1:19090/providers/rules/cn-ip')
+    for _ in range(50):
+        state=run('nft','list','set','inet','mihomo','inet4_route_exclude_address_set')
+        expected=[prefix.split('/')[0] for prefix in prefixes]
+        if all(addr in state for addr in expected) and (prefixes or 'elements' not in state):return
+        time.sleep(.1)
+    raise AssertionError('provider update did not reach nftables')
+def check_cn():
+    for udp in [False,True]:check('CN IP bypasses Mihomo REJECT','198.51.100.3',80,udp,'echo')
+    check('non-CN still captured','198.51.100.2',80)
+    check('fake IP wins over provider overlap','28.1.1.1',18081)
+    check('fake UDP wins over provider overlap','28.1.1.1',18081,True)
 def start():
     p=sp.Popen(['/test/mihomo','-service','-d',str(home),'-f',str(home/'config.json')],stdout=log,stderr=log)
     for _ in range(100):
@@ -108,6 +131,20 @@ try:
     cleanup=['/test/mihomo','-cleanup','-d',str(home),'-f',str(home/'config.json')]
     assert sp.run(cleanup,stdout=sp.DEVNULL,stderr=sp.DEVNULL).returncode!=0
     check_foreign_rules()
+    check('empty provider does not bypass','198.51.100.3',80)
+    flow=sp.Popen(['ip','netns','exec','client','python3',__file__,'flow','198.51.100.3','80','1','-'],stdin=sp.PIPE,stdout=sp.PIPE,text=True)
+    flow.stdin.write('probe\n');flow.stdin.flush();assert flow.stdout.readline().strip()=='blocked'
+    update_bypass(['198.51.100.3/32','8.8.8.8/32','28.1.1.1/32'])
+    flow.stdin.write('probe\n');flow.stdin.flush();assert flow.stdout.readline().strip()=='echo'
+    flow.terminate();flow.wait();flow=None
+    print('PASS provider update bypasses an already captured UDP flow',flush=True)
+    check_cn()
+    update_bypass(['198.51.100.4/32'])
+    check('removed CN address recaptured','198.51.100.3',80)
+    check('new CN address bypasses','198.51.100.4',80,expected='echo')
+    update_bypass([])
+    check('empty update clears bypass','198.51.100.4',80)
+    update_bypass(['198.51.100.3/32','8.8.8.8/32','28.1.1.1/32'])
     for port in [22,80,443,8080,8443]:
         check('common port captured','198.51.100.2',port)
         check('udp policy','198.51.100.2',port,True,'echo' if port in [443,8443] else 'blocked')
@@ -124,11 +161,13 @@ try:
         for transport in ['tcp','udp']:assert ns('client','python3',__file__,'dns',dest,transport).strip()=='dns ok'
     print('PASS scoped DNS before private/port exclusions, IPv4 and IPv6',flush=True)
     run('fw4','reload')
+    check_cn()
     check('capture after firewall reload','198.51.100.2',80)
     check('exception after firewall reload','28.1.1.1',443,True,'echo')
     # Proxy reload must keep TUN, rules and existing exception behavior.
     run('curl','-fsS','-X','PUT','http://127.0.0.1:19090/configs','-H','Content-Type: application/json','-d',json.dumps({'path':str(home/'config.json')}))
     check('capture after config reload','198.51.100.2',80)
+    check_cn()
     config['rules']=['MATCH,DIRECT']
     (home/'config.json').write_text(json.dumps(config))
     run('curl','-fsS','-X','PUT','http://127.0.0.1:19090/configs','-H','Content-Type: application/json','-d',json.dumps({'path':str(home/'config.json')}))
@@ -148,6 +187,7 @@ try:
     core=start()
     check_foreign_rules()
     check('capture after crash restart','198.51.100.2',80)
+    check_cn()
     check('bypass after crash restart','198.51.100.2',8443,True,'echo')
     core.terminate();assert core.wait(timeout=15)==0;core=None
     assert 'table inet mihomo' not in run('nft','list','ruleset')
@@ -164,6 +204,7 @@ try:
     assert 'table inet mihomo' not in run('nft','list','ruleset')
     print('PASS DNS bind failure exits without installing interception',flush=True)
 finally:
+    if flow and flow.poll() is None:flow.terminate();flow.wait()
     if core and core.poll() is None:core.terminate();core.wait(timeout=15)
     echo.terminate();echo.wait()
     if sys.exc_info()[0]:log.flush();print((home/'core.log').read_text(),file=sys.stderr)

@@ -1,0 +1,43 @@
+From: ashi009 <ashi009@users.noreply.github.com>
+Subject: [PATCH] tun: apply provider exclusions through the capture policy
+
+Create provider-backed nftables sets before capture-policy rules reference
+them. Let the policy own IPv4 exclusions so fake-IP precedence and UDP
+conntrack restoration use the same decision as TCP interception.
+
+Provider loading and set refresh remain upstream-owned. This patch adds
+no downloader or second copy of the CN-IP list.
+---
+diff --git a/redirect_nftables.go b/redirect_nftables.go
+--- a/redirect_nftables.go
++++ b/redirect_nftables.go
+@@ -27,12 +27,12 @@
+ 		Family: nftables.TableFamilyINet,
+ 	})
+ 
++	err = r.nftablesCreateAddressSets(nft, table, false)
++	if err != nil {
++		return err
++	}
++
+ 	if err = r.setupCapturePolicy(nft, table); err != nil {
+-		return err
+-	}
+-
+-	err = r.nftablesCreateAddressSets(nft, table, false)
+-	if err != nil {
+ 		return err
+ 	}
+ 
+diff --git a/redirect_nftables_rules.go b/redirect_nftables_rules.go
+--- a/redirect_nftables_rules.go
++++ b/redirect_nftables_rules.go
+@@ -669,7 +669,7 @@
+ 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 2, "inet6_route_address_set", nftables.TableFamilyIPv6, true)
+ 	}
+ 
+-	if r.enableIPv4 && len(routeExcludeAddressSet) > 0 {
++	if r.tunOptions.CapturePolicy == nil && r.enableIPv4 && len(routeExcludeAddressSet) > 0 {
+ 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 3, "inet4_route_exclude_address_set", nftables.TableFamilyIPv4, false)
+ 	}
+ 
