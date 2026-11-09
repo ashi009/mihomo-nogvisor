@@ -8,7 +8,7 @@ jsonnet -J "$repo/config" "$repo/tests/linux/config.jsonnet" > "$work/config.jso
 jsonnet -J "$repo/config" "$repo/tests/linux/capture.jsonnet" > "$work/capture.json"
 "$repo/scripts/build-native.sh" "$src" "$work/mihomo"
 cd "$src"
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go list -mod=mod -deps -tags "$(cat "$repo/scripts/native-tags")" . > "$work/runtime-deps.txt"
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go list -mod=mod -deps -tags "$(paste -sd, "$repo/scripts/native-tags")" . > "$work/runtime-deps.txt"
 if grep -E '(^|/)gvisor(/|$)|^github.com/metacubex/tailscale(/|$)|^tailscale.com/(tsnet|wgengine/netstack)$' "$work/runtime-deps.txt"; then
     echo 'unexpected userspace stack or fork in the native dependency graph' >&2
     exit 1
