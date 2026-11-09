@@ -1,0 +1,27 @@
+From b95a623326f68b4cd43c154353c26c2b26d584fc Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Mon, 9 Nov 2026 08:18:39 +0800
+Subject: [PATCH] tsdial: skip PeerAPI cleanup when the client is omitted
+
+Dialer.Close calls PeerAPITransport unconditionally, which panics when
+built with ts_omit_peerapiclient. Guard transport cleanup with the same
+feature flag as PeerAPIHTTPClient so native service shutdown can finish.
+---
+ net/tsdial/tsdial.go | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/net/tsdial/tsdial.go b/net/tsdial/tsdial.go
+index c04b420..7aeb6a6 100644
+--- a/net/tsdial/tsdial.go
++++ b/net/tsdial/tsdial.go
+@@ -207,7 +207,9 @@ func (d *Dialer) Close() error {
+ 		c.Close()
+ 	}
+ 	d.activeSysConns = nil
+-	d.PeerAPITransport().CloseIdleConnections()
++	if buildfeatures.HasPeerAPIClient {
++		d.PeerAPITransport().CloseIdleConnections()
++	}
+ 	return nil
+ }
+ 
