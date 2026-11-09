@@ -9,6 +9,10 @@ jsonnet -J "$repo/config" "$repo/tests/linux/capture.jsonnet" > "$work/capture.j
 "$repo/scripts/build-native.sh" "$src" "$work/mihomo"
 cd "$src"
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go list -mod=mod -deps -tags "$(paste -sd, "$repo/scripts/native-tags")" . > "$work/runtime-deps.txt"
+grep -qx 'tailscale.com/feature/portmapper' "$work/runtime-deps.txt" || {
+    echo 'native build is missing Tailscale port mapping support' >&2
+    exit 1
+}
 if grep -E '(^|/)gvisor(/|$)|^github.com/metacubex/tailscale(/|$)|^tailscale.com/(tsnet|wgengine/netstack)$' "$work/runtime-deps.txt"; then
     echo 'unexpected userspace stack or fork in the native dependency graph' >&2
     exit 1
