@@ -2,8 +2,8 @@
 set -eu
 umask 077
 
-# The package owns only these sections. Jsonnet owns their contents.
-owned='mihomo_tailnet mihomo_listeners mihomo_tailnet_lan mihomo_lan_tailnet'
+# The package owns these fixed zone and forwarding sections.
+owned='mihomo_tun mihomo_lan_tun mihomo_tun_lan mihomo_tailnet mihomo_listeners mihomo_tailnet_lan mihomo_lan_tailnet'
 action=${1:?usage: mihomo-firewall apply|remove}
 case "$action" in apply|remove) ;; *) exit 2 ;; esac
 fragment=/usr/share/mihomo/tailnet-firewall.uci

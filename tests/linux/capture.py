@@ -232,6 +232,8 @@ try:
         time.sleep(.1)
     assert (home/'firewall-ready').exists()
     core=start()
+    assert config['tun']['device'] in ip('-br','link')
+    assert not list(Path('/etc/nftables.d').glob('*auto-redirect*'))
     check_tailnet()
     cleanup=['/test/mihomo','-cleanup','-d',str(home),'-f',str(home/'config.json')]
     assert sp.run(cleanup,stdout=sp.DEVNULL,stderr=sp.DEVNULL).returncode!=0
@@ -297,7 +299,7 @@ try:
     check('bypass after crash restart','198.51.100.2',8443,True,'echo')
     core.terminate();assert core.wait(timeout=15)==0;core=None
     assert 'table inet mihomo {' not in run('nft','list','ruleset')
-    assert 'utun' not in ip('-br','link')
+    assert config['tun']['device'] not in ip('-br','link')
     assert 'lookup 100' not in ip('rule')
     assert not list(Path('/etc/nftables.d').glob('*auto-redirect*'))
     check_foreign_rules()

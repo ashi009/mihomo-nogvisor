@@ -10,6 +10,7 @@ import (
 // and is redirected before destination exclusions. A nil policy is upstream
 // behavior; an enabled policy never captures router-originated traffic.
 type CapturePolicy struct {
+	Firewall4Managed bool           `yaml:"firewall4-managed" json:"firewall4-managed"`
 	SourceInterfaces []string       `yaml:"source-interfaces" json:"source-interfaces"`
 	Sources          []netip.Prefix `yaml:"sources" json:"sources"`
 	DNS6Sources      []netip.Prefix `yaml:"dns6-sources" json:"dns6-sources"`

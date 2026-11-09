@@ -8,7 +8,7 @@ function(lanInterfaces=['br-lan'], mtu=1500) {
   'external-ui-url': 'https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip',
   tun: {
     enable: true,
-    device: 'utun',
+    device: 'mihomo0',
     stack: 'system',
     mtu: mtu,
     'auto-route': true,
@@ -27,6 +27,7 @@ function(lanInterfaces=['br-lan'], mtu=1500) {
       '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16', '224.0.0.0/3',
     ],
     'capture-policy': {
+      'firewall4-managed': true,
       'source-interfaces': lanInterfaces,
       sources: [],
       'dns6-sources': ['fd00::/8', 'fe80::/10'],

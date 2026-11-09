@@ -16,3 +16,18 @@ config forwarding 'mihomo_tailnet_lan'
 config forwarding 'mihomo_lan_tailnet'
 	option src 'lan'
 	option dest 'mh_tailnet'
+
+config zone 'mihomo_tun'
+	option name 'mh_tun'
+	option device 'mihomo0'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+
+config forwarding 'mihomo_lan_tun'
+	option src 'lan'
+	option dest 'mh_tun'
+
+config forwarding 'mihomo_tun_lan'
+	option src 'mh_tun'
+	option dest 'lan'

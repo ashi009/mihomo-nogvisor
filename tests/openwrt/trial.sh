@@ -21,7 +21,7 @@ cleanup() {
     rm -f /etc/nftables.d/0-mihomo-auto-redirect.nft
     for priority in 5206 5207 5208; do ip -4 rule del priority "$priority" 2>/dev/null; done
     ip -4 route flush table 100
-    ip link del utun 2>/dev/null
+    ip link del mihomo0 2>/dev/null
     fw4 reload > "$trial/rollback-firewall.log" 2>&1
     /etc/init.d/tailscale start
     /etc/init.d/shellcrash start
