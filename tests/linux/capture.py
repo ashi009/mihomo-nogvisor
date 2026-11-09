@@ -103,7 +103,7 @@ for namespace,device,addr in [(None,'br-lan','fd66::1/64'),('client','br-lanpeer
     args=['ip','-6','addr','add',addr,'dev',device,'nodad'];ns(namespace,*args) if namespace else run(*args)
 ns('client','ip','-6','route','add','default','via','fd66::1');ns('target','ip','-6','route','add','default','via','fd77::1')
 ns('tailclient','ip','-6','route','add','default','via','fd99::1')
-# Use OpenWrt's real UCI/fw4 and the APK helper against a legacy Tailscale zone.
+# Exercise the package fragment with real OpenWrt UCI/fw4.
 Path('/etc/config/firewall').write_text("""
 config defaults
  option input 'REJECT'
@@ -130,34 +130,16 @@ config rule 'ndp'
  option family 'ipv6'
  option proto 'icmp'
  option target 'ACCEPT'
-config zone
- option name 'tailscale'
- option device 'tailscale0'
- option input 'ACCEPT'
- option output 'ACCEPT'
- option forward 'ACCEPT'
- option masq '1'
- option mtu_fix '1'
-config forwarding
- option src 'lan'
- option dest 'tailscale'
-config forwarding
- option src 'tailscale'
- option dest 'lan'
 """)
-Path('/etc/config/network').write_text("""
-config interface 'tailscale'
- option proto 'none'
- option device 'tailscale0'
-""")
+Path('/etc/config/network').write_text("config interface 'unrelated'\n option proto 'none'\n")
+network_before=Path('/etc/config/network').read_bytes()
 Path('/usr/share/mihomo').mkdir(exist_ok=True)
 Path('/usr/share/mihomo/tailnet-firewall.uci').write_text(Path('/package/tailnet-firewall.uci').read_text())
 helper=['sh','/package/mihomo-firewall']
 run('fw4','start')
 run(*helper,'apply')
 state=run('uci','export','firewall')
-assert "option name 'tailscale'" not in state and "option dest 'tailscale'" not in state,state
-assert 'tailscale' not in run('uci','export','network')
+assert Path('/etc/config/network').read_bytes()==network_before
 run(*helper,'apply');assert state==run('uci','export','firewall')
 run('uci','set','firewall.pending=rule')
 failed=sp.run(helper+['apply'],stdout=sp.PIPE,stderr=sp.PIPE,text=True)
@@ -165,7 +147,7 @@ assert failed.returncode!=0 and 'Uncommitted UCI changes' in failed.stderr
 assert 'firewall.pending' in run('uci','changes','firewall')
 run('uci','revert','firewall')
 assert state==run('uci','export','firewall')
-print('PASS package adopts legacy UCI sections, reapplies idempotently and preserves pending edits',flush=True)
+print('PASS package reapplies idempotently and preserves network config and pending edits',flush=True)
 echo=sp.Popen(['ip','netns','exec','target','python3',__file__,'echo'])
 lan_echo=sp.Popen(['ip','netns','exec','client','python3',__file__,'echo','10.66.0.2','53,80,7890'])
 tail_echo=sp.Popen(['ip','netns','exec','tailclient','python3',__file__,'echo','100.99.0.2','80','100.99.0.1'])
@@ -325,6 +307,7 @@ try:
     run(*helper,'remove');run(*helper,'remove')
     state=run('uci','export','firewall')
     assert 'mihomo_' not in state and 'lan_wan' in state
+    assert Path('/etc/config/network').read_bytes()==network_before
     check('removed package leaves no tailnet forwarding allow','10.66.0.2',7890,namespace='tailclient')
     print('PASS package removal deletes only owned UCI permissions',flush=True)
 finally:

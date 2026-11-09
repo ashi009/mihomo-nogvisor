@@ -40,7 +40,7 @@ apk add --allow-untrusted /tmp/mihomo-native-*.apk
 APK 安装固定的 `tailscale0`、`mihomo0` 防火墙区域和各自的 LAN 转发规则，保留 masquerade 和 MSS 调整。
 捕获和 DNS 重定向只处理 LAN 入站。Mihomo 根据监听配置限制 tailnet 对路由器
 代理、控制器及 DNS 端口的访问；普通路由器管理和 LAN 主机服务仍可访问。
-修改监听端口后需重启服务。升级迁移原有 Tailscale UCI 配置，卸载删除包拥有的区域。
+修改监听端口后需重启服务。卸载删除包拥有的区域。
 
 原生捕获策略通过 `route-exclude-address-set: [cn-ip]` 将同名 IP 规则集交给
 nftables，随规则集更新同步。真实 CN-IP 目的地址直接转发，跳过 Mihomo 的规则判断；

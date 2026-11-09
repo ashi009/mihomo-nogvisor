@@ -5,11 +5,11 @@ package native
 import (
 	"errors"
 	"fmt"
-	"github.com/metacubex/mihomo/component/tailnet"
 	"os"
 	"os/exec"
 	"path/filepath"
 
+	"github.com/metacubex/mihomo/component/tailnet"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/nftables"
