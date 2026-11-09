@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/envknob"
+	_ "tailscale.com/feature/portmapper"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/store"
