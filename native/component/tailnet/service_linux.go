@@ -41,6 +41,8 @@ import (
 )
 
 type Config struct {
+	ProtectListeners    bool           `yaml:"protect-listeners" json:"protect-listeners"`
+	ProtectedPorts      []uint16       `yaml:"-" json:"-"`
 	FirewallMode        string         `yaml:"firewall-mode" json:"firewall-mode"`
 	Enable              bool           `yaml:"enable" json:"enable"`
 	Name                string         `yaml:"name" json:"name"`
@@ -183,6 +185,16 @@ func Start(c Config) (service *Service, retErr error) {
 	add(func() { lock.Close() })
 	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return nil, fmt.Errorf("tailnet state already in use: %w", err)
+	}
+	if c.ProtectListeners {
+		if err := installListenerFirewall(c); err != nil {
+			return nil, err
+		}
+		add(func() {
+			if err := CleanupListenerFirewall(); err != nil {
+				log.Errorln("[Tailnet] listener firewall cleanup: %s", err)
+			}
+		})
 	}
 	auth := ""
 	if c.AuthKeyFile != "" {

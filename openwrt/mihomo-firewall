@@ -6,9 +6,9 @@ umask 077
 owned='mihomo_tailnet mihomo_listeners mihomo_tailnet_lan mihomo_lan_tailnet'
 action=${1:?usage: mihomo-firewall apply|remove}
 case "$action" in apply|remove) ;; *) exit 2 ;; esac
-fragment=/etc/mihomo/firewall.uci
+fragment=/usr/share/mihomo/tailnet-firewall.uci
 [ "$action" != apply ] || [ -f "$fragment" ] || {
-    echo "Generate $fragment alongside config.yaml with Jsonnet" >&2
+    echo "Missing package firewall fragment" >&2
     exit 1
 }
 mkdir -p /var/lock
@@ -60,7 +60,7 @@ for config in firewall network; do
     fi
 done
 [ "$changed" = 1 ] || exit 0
-if ! fw4 check || ! fw4 reload; then
+if ! fw4 check || { [ -f /var/run/fw4.state ] && ! fw4 reload; }; then
     for config in firewall network; do cp "$work/$config" "/etc/config/$config"; done
     fw4 reload || :
     exit 1

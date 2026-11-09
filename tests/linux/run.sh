@@ -6,7 +6,6 @@ work=${2:?work directory required}
 mkdir -p "$work"
 jsonnet -J "$repo/config" "$repo/tests/linux/config.jsonnet" > "$work/config.json"
 jsonnet -J "$repo/config" "$repo/tests/linux/capture.jsonnet" > "$work/capture.json"
-jsonnet -J "$repo/config" -S -e 'local f=import "firewall.libsonnet"; local c=import "capture.jsonnet"; f(c+{tailnet:{enable:true,interface:"tailscale0"}})' -J "$repo/tests/linux" > "$work/firewall.uci"
 "$repo/scripts/build-native.sh" "$src" "$work/mihomo"
 cd "$src"
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go list -mod=mod -deps -tags "$(paste -sd, "$repo/scripts/native-tags")" . > "$work/runtime-deps.txt"

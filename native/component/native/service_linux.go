@@ -5,6 +5,7 @@ package native
 import (
 	"errors"
 	"fmt"
+	"github.com/metacubex/mihomo/component/tailnet"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,7 @@ func Cleanup(path string) error {
 		}
 	}
 	if cfg.Tailnet.Enable {
+		add(tailnet.CleanupListenerFirewall())
 		name := cfg.Tailnet.Interface
 		if name == "" {
 			name = "tailscale0"

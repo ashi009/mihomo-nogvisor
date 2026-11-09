@@ -1,0 +1,18 @@
+package firewall
+
+config zone 'mihomo_tailnet'
+	option name 'mh_tailnet'
+	option device 'tailscale0'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option masq '1'
+	option mtu_fix '1'
+
+config forwarding 'mihomo_tailnet_lan'
+	option src 'mh_tailnet'
+	option dest 'lan'
+
+config forwarding 'mihomo_lan_tailnet'
+	option src 'lan'
+	option dest 'mh_tailnet'

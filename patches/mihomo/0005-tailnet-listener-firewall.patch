@@ -1,0 +1,29 @@
+From: ashi009 <ashi009@users.noreply.github.com>
+Subject: [PATCH] config: protect Mihomo listeners from tailnet access
+
+LAN-only subnet routing must not expose the router's explicit proxy or
+configuration API as another path to the Internet. Derive protected ports
+from the actual listener configuration before normalizing the tailnet.
+---
+diff --git a/config/config.go b/config/config.go
+--- a/config/config.go
++++ b/config/config.go
+@@ -643,7 +643,17 @@
+ 
+ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
+ 	config := &Config{}
+-	tc, err := tailnet.Normalize(rawCfg.Tailnet)
++	dnsListener := ""
++	if rawCfg.DNS.Enable {
++		dnsListener = rawCfg.DNS.Listen
++	}
++	protectedTailnet, err := tailnet.ProtectListeners(rawCfg.Tailnet,
++		[]int{rawCfg.Port, rawCfg.SocksPort, rawCfg.MixedPort, rawCfg.RedirPort, rawCfg.TProxyPort}, rawCfg.Listeners,
++		rawCfg.ExternalController, rawCfg.ExternalControllerTLS, dnsListener)
++	if err != nil {
++		return nil, err
++	}
++	tc, err := tailnet.Normalize(protectedTailnet)
+ 	if err != nil {
+ 		return nil, err
+ 	}

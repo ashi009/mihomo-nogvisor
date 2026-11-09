@@ -2,6 +2,7 @@
 function(hostname='', prefixes=[], stateDir='tailnet', interface='tailscale0', authKeyFile='', advertiseInterfaces=[]) {
   tailnet: {
     enable: true,
+    'protect-listeners': true,
     'firewall-mode': 'nftables',
     name: 'tailnet',
     hostname: hostname,

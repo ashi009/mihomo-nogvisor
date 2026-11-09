@@ -3,10 +3,7 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 package=${1:?usage: package.sh APK_FILE}
 package=$(CDPATH= cd -- "$(dirname "$package")" && pwd)/$(basename "$package")
-fragment=$(mktemp)
-trap 'rm -f "$fragment"' EXIT
-jsonnet -J "$repo/config" -S -e 'local f=import "firewall.libsonnet"; f((import "capture.libsonnet")()+(import "tailnet.libsonnet")())' > "$fragment"
-docker run --rm -i --cap-add NET_ADMIN --network none -v "$package:/candidate.apk:ro" -v "$repo:/repo:ro" -v "$fragment:/firewall.uci:ro" \
+docker run --rm -i --cap-add NET_ADMIN --network none -v "$package:/candidate.apk:ro" -v "$repo:/repo:ro" \
     mihomo-native-test:local sh -s <<'SH'
 set -eu
 mkdir -p /etc/init.d /etc/mihomo/tailnet
@@ -14,7 +11,7 @@ cat > /etc/rc.common <<'RC'
 #!/bin/sh
 case "$2" in
     running) test -e /tmp/service-running ;;
-    start) /usr/libexec/mihomo-firewall apply || exit 1; echo start >> /tmp/service-events; touch /tmp/service-running ;;
+    start) echo start >> /tmp/service-events; touch /tmp/service-running ;;
     stop) echo stop >> /tmp/service-events; rm -f /tmp/service-running ;;
     enable) echo enable >> /tmp/service-events; touch /tmp/service-enabled ;;
     disable) echo disable >> /tmp/service-events; rm -f /tmp/service-enabled ;;
@@ -24,7 +21,6 @@ cp /repo/openwrt/mihomo.init /etc/init.d/mihomo
 chmod 755 /etc/init.d/mihomo
 printf 'config defaults\n option input ACCEPT\n option output ACCEPT\n option forward REJECT\nconfig zone lan\n option name lan\n option device br-lan\n' > /etc/config/firewall
 printf 'config interface lan\n option device br-lan\n' > /etc/config/network
-cp /firewall.uci /etc/mihomo/firewall.uci
 fw4 start
 printf 'external jsonnet output\n' > /etc/mihomo/config.yaml
 printf 'existing identity\n' > /etc/mihomo/tailnet/tailscaled.state

@@ -11,6 +11,7 @@ case "$1" in
         ;;
     post-install)
         mkdir -p -m 700 /etc/mihomo
+        /usr/libexec/mihomo-firewall apply
         /etc/init.d/mihomo enable
         rm -f "$restart"
         if [ -s /etc/mihomo/config.yaml ]; then
@@ -18,6 +19,7 @@ case "$1" in
         fi
         ;;
     post-upgrade)
+        /usr/libexec/mihomo-firewall apply
         if [ -f "$restart" ]; then
             rm -f "$restart"
             /etc/init.d/mihomo start

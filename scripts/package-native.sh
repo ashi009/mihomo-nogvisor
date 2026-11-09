@@ -19,8 +19,9 @@ version=$1
 arch=$2
 revision=$3
 epoch=$4
-mkdir -p /stage/usr/bin /stage/usr/libexec /stage/etc/init.d /stage/lib/upgrade/keep.d /stage/lib/apk/packages
+mkdir -p /stage/usr/bin /stage/usr/libexec /stage/usr/share/mihomo /stage/etc/init.d /stage/lib/upgrade/keep.d /stage/lib/apk/packages
 cp /binary /stage/usr/bin/mihomo
+cp /repo/openwrt/tailnet-firewall.uci /stage/usr/share/mihomo/tailnet-firewall.uci
 cp /repo/openwrt/mihomo-firewall /stage/usr/libexec/mihomo-firewall
 chmod 755 /stage/usr/libexec/mihomo-firewall
 cp /repo/openwrt/mihomo.init /stage/etc/init.d/mihomo

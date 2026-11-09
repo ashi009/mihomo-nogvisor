@@ -150,8 +150,8 @@ config interface 'tailscale'
  option proto 'none'
  option device 'tailscale0'
 """)
-Path('/etc/mihomo').mkdir(exist_ok=True)
-Path('/etc/mihomo/firewall.uci').write_text(Path('/test/firewall.uci').read_text())
+Path('/usr/share/mihomo').mkdir(exist_ok=True)
+Path('/usr/share/mihomo/tailnet-firewall.uci').write_text(Path('/package/tailnet-firewall.uci').read_text())
 helper=['sh','/package/mihomo-firewall']
 run('fw4','start')
 run(*helper,'apply')
@@ -225,6 +225,12 @@ def start():
         if 'capture_select' in run('nft','list','ruleset') and json.loads(run('curl','-fsS','http://127.0.0.1:19090/configs'))['tun']['enable']:return p
     raise AssertionError('capture not ready')
 try:
+    firewall=sp.Popen(['/test/native.test','-test.run','^TestLANOnlyFirewallFixture$','-test.timeout=180s'],env=dict(os.environ,MIHOMO_FIREWALL_FIXTURE=str(home)),stdout=log,stderr=log)
+    for _ in range(100):
+        if firewall.poll() is not None:raise AssertionError('listener firewall fixture failed')
+        if (home/'firewall-ready').exists():break
+        time.sleep(.1)
+    assert (home/'firewall-ready').exists()
     core=start()
     check_tailnet()
     cleanup=['/test/mihomo','-cleanup','-d',str(home),'-f',str(home/'config.json')]
@@ -310,6 +316,8 @@ try:
     occupied.close()
     assert 'table inet mihomo {' not in run('nft','list','ruleset')
     print('PASS DNS bind failure exits without installing interception',flush=True)
+    (home/'firewall-stop').touch();assert firewall.wait(timeout=10)==0;firewall=None
+    assert 'table inet mihomo_listeners' not in run('nft','list','ruleset')
     # Stopping/crashing the core does not remove package-owned firewall policy.
     assert 'mh_tailnet' in run('nft','list','table','inet','fw4')
     run(*helper,'remove');run(*helper,'remove')
@@ -318,6 +326,8 @@ try:
     check('removed package leaves no tailnet forwarding allow','10.66.0.2',7890,namespace='tailclient')
     print('PASS package removal deletes only owned UCI permissions',flush=True)
 finally:
+    if firewall and firewall.poll() is None:
+        (home/'firewall-stop').touch();firewall.wait(timeout=10)
     for process in [lan_echo,tail_echo,router_echo]:process.terminate();process.wait()
     if flow and flow.poll() is None:flow.terminate();flow.wait()
     if core and core.poll() is None:core.terminate();core.wait(timeout=15)

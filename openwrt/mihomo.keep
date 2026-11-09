@@ -1,5 +1,6 @@
 /usr/bin/mihomo
 /usr/libexec/mihomo-firewall
+/usr/share/mihomo/tailnet-firewall.uci
 /etc/init.d/mihomo
 /lib/upgrade/keep.d/mihomo
 /etc/mihomo/
