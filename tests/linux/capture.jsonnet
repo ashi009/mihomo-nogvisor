@@ -1,6 +1,8 @@
 local capture = import 'capture.libsonnet';
 capture() + {
-  'external-controller': '127.0.0.1:19090',
+  'external-controller': '0.0.0.0:19090',
+  'mixed-port': 7890,
+  'allow-lan': true,
   'log-level': 'debug',
   hosts: { 'probe.test': '192.0.2.42' },
   'rule-providers': {

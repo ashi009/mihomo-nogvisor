@@ -1,0 +1,70 @@
+#!/bin/sh
+set -eu
+umask 077
+
+# The package owns only these sections. Jsonnet owns their contents.
+owned='mihomo_tailnet mihomo_listeners mihomo_tailnet_lan mihomo_lan_tailnet'
+action=${1:?usage: mihomo-firewall apply|remove}
+case "$action" in apply|remove) ;; *) exit 2 ;; esac
+fragment=/etc/mihomo/firewall.uci
+[ "$action" != apply ] || [ -f "$fragment" ] || {
+    echo "Generate $fragment alongside config.yaml with Jsonnet" >&2
+    exit 1
+}
+mkdir -p /var/lock
+exec 9>/var/lock/mihomo-firewall.lock
+flock -x 9
+for config in firewall network; do
+    [ -z "$(uci changes "$config")" ] || {
+        echo "Uncommitted UCI changes in $config; refusing to commit them" >&2
+        exit 1
+    }
+done
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir "$work/stage" "$work/delta"
+for config in firewall network; do
+    cp "/etc/config/$config" "$work/$config"
+    cp "$work/$config" "$work/stage/$config"
+done
+u() { uci -c "$work/stage" -t "$work/delta" "$@"; }
+for section in $owned; do u -q delete "firewall.$section" || :; done
+if [ "$action" = apply ]; then
+    u -m import firewall < "$fragment"
+    device=$(u -q get firewall.mihomo_tailnet.device || :)
+    # Adopt the former standalone Tailscale zone only when its device matches.
+    if [ -n "$device" ] && [ "$(u -q get network.tailscale.device || :)" = "$device" ] &&
+       [ "$(u -q get network.tailscale.proto || :)" = none ]; then
+        for section in $(u -X show firewall | sed -n "s/^firewall\.\([^.=]*\)=zone$/\1/p"); do
+            [ "$(u -q get "firewall.$section.name" || :)" = tailscale ] || continue
+            for forwarding in $(u -X show firewall | sed -n "s/^firewall\.\([^.=]*\)=forwarding$/\1/p"); do
+                src=$(u -q get "firewall.$forwarding.src" || :)
+                dest=$(u -q get "firewall.$forwarding.dest" || :)
+                if [ "$src" = tailscale ] || [ "$dest" = tailscale ]; then
+                    u delete "firewall.$forwarding"
+                fi
+            done
+            u delete "firewall.$section"
+        done
+        u delete network.tailscale
+    fi
+fi
+u commit firewall
+u commit network
+changed=0
+for config in firewall network; do
+    if ! cmp -s "$work/$config" "$work/stage/$config"; then
+        cp -p "$work/stage/$config" "/etc/config/$config.mihomo-new"
+        mv "/etc/config/$config.mihomo-new" "/etc/config/$config"
+        changed=1
+    fi
+done
+[ "$changed" = 1 ] || exit 0
+if ! fw4 check || ! fw4 reload; then
+    for config in firewall network; do cp "$work/$config" "/etc/config/$config"; done
+    fw4 reload || :
+    exit 1
+fi
+if ! cmp -s "$work/network" /etc/config/network && [ -x /etc/init.d/network ]; then
+    /etc/init.d/network reload
+fi

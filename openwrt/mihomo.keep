@@ -1,4 +1,5 @@
 /usr/bin/mihomo
+/usr/libexec/mihomo-firewall
 /etc/init.d/mihomo
 /lib/upgrade/keep.d/mihomo
 /etc/mihomo/

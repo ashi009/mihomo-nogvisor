@@ -26,6 +26,7 @@ case "$1" in
     pre-deinstall)
         /etc/init.d/mihomo stop
         /etc/init.d/mihomo disable
+        /usr/libexec/mihomo-firewall remove
         rm -f "$restart"
         ;;
 esac

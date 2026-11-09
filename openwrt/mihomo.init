@@ -19,6 +19,7 @@ check_config() {
 start_service() {
 	[ -x "$PROG" ] && [ -s "$CONFIG" ] || return 1
 	check_config || return 1
+	/usr/libexec/mihomo-firewall apply || return 1
 	umask 077
 	cp "$CONFIG" "$RUNNING.new" && mv "$RUNNING.new" "$RUNNING" || return 1
 	procd_open_instance core

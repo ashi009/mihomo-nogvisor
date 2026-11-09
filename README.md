@@ -37,6 +37,15 @@ apk add --allow-untrusted /tmp/mihomo-native-*.apk
 接口不存在或没有可用 IPv4 地址时启动失败，不会扩大捕获范围。
 修改 hostname 或 LAN 地址后需重启服务，重新读取主机信息。
 
+[firewall.libsonnet](config/firewall.libsonnet) 从同一份配置生成 `firewall.uci`，
+与 YAML 一起部署到 `/etc/mihomo/`。APK 在服务启动时同步它拥有的 UCI sections，
+由 fw4 限制 tailnet 只向 LAN 转发，保留 masquerade 和 MSS 调整。
+捕获和 DNS 重定向只处理 LAN 入站；普通路由器管理仍可访问，Mihomo 的代理、
+控制器及 DNS 监听端口则禁止从 tailnet 访问。端口列表从 Jsonnet 的配置对象推导，
+更改监听端口后需同时重新生成两个文件并重启服务。
+包直接绑定 Tailscale 设备，不需要单独的 LuCI 网络接口。升级会迁移原有的
+Tailscale UCI 配置；卸载仅删除包拥有的 sections，保留其他防火墙配置。
+
 原生捕获策略通过 `route-exclude-address-set: [cn-ip]` 将同名 IP 规则集交给
 nftables，随规则集更新同步。真实 CN-IP 目的地址直接转发，跳过 Mihomo 的规则判断；
 fake-IP 仍进入 Mihomo，CN-domain 规则也保留在那里。已有端口及 UDP 例外不变。

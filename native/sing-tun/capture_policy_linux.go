@@ -45,6 +45,15 @@ func (r *autoRedirect) setupCapturePolicy(nft *nftables.Conn, table *nftables.Ta
 	policy := nft.AddChain(&nftables.Chain{Table: table, Name: "capture_select"})
 	dns := nft.AddChain(&nftables.Chain{Table: table, Name: "capture_dns", Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest - 1), Type: nftables.ChainTypeNAT})
 	for _, c := range []*nftables.Chain{policy, dns} {
+		// Ingress ownership is independent of source prefixes: routed or
+		// overlapping LAN addresses arriving through an overlay are not LAN input.
+		if len(p.SourceInterfaces) > 0 {
+			var outsideLAN []expr.Any
+			for _, name := range p.SourceInterfaces {
+				outsideLAN = append(outsideLAN, meta(expr.MetaKeyIIFNAME, nftablesIfname(name), true)...)
+			}
+			add(c, outsideLAN, bypass)
+		}
 		add(c, meta(expr.MetaKeyMARK, binaryutil.NativeEndian.PutUint32(p.BypassMark), false), bypass)
 		gids := p.BypassGIDs
 		if c == dns {

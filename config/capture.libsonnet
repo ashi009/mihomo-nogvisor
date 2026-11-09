@@ -18,7 +18,7 @@ function(lanInterfaces=['br-lan'], mtu=1500) {
     'iproute2-rule-index': 5206,
     'auto-redirect-input-mark': 7892,
     'auto-redirect-output-mark': 7894,
-    'include-interface': lanInterfaces + ['tailscale0'],
+    'include-interface': lanInterfaces,
     'inet6-address': [],
     'dns-hijack': [],
     'route-exclude-address-set': ['cn-ip'],
@@ -28,7 +28,7 @@ function(lanInterfaces=['br-lan'], mtu=1500) {
     ],
     'capture-policy': {
       'source-interfaces': lanInterfaces,
-      sources: ['100.64.0.0/10'],
+      sources: [],
       'dns6-sources': ['fd00::/8', 'fe80::/10'],
       'fake-ip': '28.0.0.0/8',
       ports: [22, 80, 443, 8080, 8443],
