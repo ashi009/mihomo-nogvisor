@@ -46,6 +46,10 @@ jobs:
           tests/linux/run.sh "$RUNNER_TEMP/native/mihomo-$revision" "$RUNNER_TEMP/native" 2>&1 | tee "$RUNNER_TEMP/native/linux-tests.log"
           "$RUNNER_TEMP/native/mihomo" -v | tee "$RUNNER_TEMP/native/version.txt"
           sha256sum "$RUNNER_TEMP/native/mihomo" > "$RUNNER_TEMP/native/SHA256SUMS"
+      - name: Package and exercise APK lifecycle
+        run: |
+          package=$(scripts/package-native.sh "$RUNNER_TEMP/native/mihomo" "$RUNNER_TEMP/native")
+          tests/openwrt/package.sh "$package"
       - name: Report binary size
         if: always()
         shell: bash
@@ -60,7 +64,7 @@ jobs:
           import hashlib, json, pathlib, sys
           work = pathlib.Path(sys.argv[1])
           files = []
-          for name in ['mihomo', 'mihomo.gz']:
+          for name in ['mihomo', 'mihomo.gz'] + sorted(p.name for p in work.glob('*.apk')):
               data = (work / name).read_bytes()
               files.append({'file': name, 'bytes': len(data), 'mib': round(len(data) / 2**20, 3), 'sha256': hashlib.sha256(data).hexdigest()})
           (work / 'size.json').write_text(json.dumps(files, indent=2) + '\n')
@@ -77,6 +81,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native/mihomo
             ${{ runner.temp }}/native/mihomo.gz
+            ${{ runner.temp }}/native/*.apk
             ${{ runner.temp }}/native/size.json
             ${{ runner.temp }}/native/size.md
             ${{ runner.temp }}/native/runtime-deps.txt
