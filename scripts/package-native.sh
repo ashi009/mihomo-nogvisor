@@ -19,8 +19,11 @@ version=$1
 arch=$2
 revision=$3
 epoch=$4
-mkdir -p /stage/usr/bin /stage/etc/init.d /stage/lib/upgrade/keep.d /stage/lib/apk/packages
+mkdir -p /stage/usr/bin /stage/usr/libexec /stage/usr/share/mihomo /stage/etc/init.d /stage/lib/upgrade/keep.d /stage/lib/apk/packages
 cp /binary /stage/usr/bin/mihomo
+cp /repo/openwrt/tailnet-firewall.uci /stage/usr/share/mihomo/tailnet-firewall.uci
+cp /repo/openwrt/mihomo-firewall /stage/usr/libexec/mihomo-firewall
+chmod 755 /stage/usr/libexec/mihomo-firewall
 cp /repo/openwrt/mihomo.init /stage/etc/init.d/mihomo
 cp /repo/openwrt/mihomo.keep /stage/lib/upgrade/keep.d/mihomo
 chmod 755 /stage/usr/bin/mihomo /stage/etc/init.d/mihomo
@@ -37,7 +40,7 @@ apk mkpkg --compat 3.0.0 --compression deflate:9 \
     --info license:GPL-3.0-or-later --info origin:mihomo-nogvisor \
     --info url:https://github.com/ashi009/mihomo-nogvisor \
     --info "repo-commit:$revision" --info "build-time:$epoch" \
-    --info 'depends:busybox procd kmod-tun nftables firewall4 ip-full ca-bundle !mihomo !tailscale' \
+    --info 'depends:busybox uci procd kmod-tun nftables firewall4 ip-full ca-bundle !mihomo !tailscale' \
     "$@" --files /stage --output "/out/mihomo-native-$version.apk"
 SH
 printf '%s\n' "$out/mihomo-native-$version.apk"

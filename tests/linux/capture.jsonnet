@@ -1,8 +1,13 @@
 local capture = import 'capture.libsonnet';
-capture('10.66.0.0/24') + {
-  'external-controller': '127.0.0.1:19090',
+capture() + {
+  'external-controller': '0.0.0.0:19090',
+  'mixed-port': 7890,
+  'allow-lan': true,
   'log-level': 'debug',
   hosts: { 'probe.test': '192.0.2.42' },
+  'rule-providers': {
+    'cn-ip': { type: 'file', behavior: 'ipcidr', format: 'yaml', path: './cn-ip.yaml' },
+  },
   dns+: {
     'enhanced-mode': 'redir-host',
     'use-hosts': true,

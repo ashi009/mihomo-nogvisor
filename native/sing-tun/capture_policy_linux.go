@@ -45,6 +45,15 @@ func (r *autoRedirect) setupCapturePolicy(nft *nftables.Conn, table *nftables.Ta
 	policy := nft.AddChain(&nftables.Chain{Table: table, Name: "capture_select"})
 	dns := nft.AddChain(&nftables.Chain{Table: table, Name: "capture_dns", Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest - 1), Type: nftables.ChainTypeNAT})
 	for _, c := range []*nftables.Chain{policy, dns} {
+		// Ingress ownership is independent of source prefixes: routed or
+		// overlapping LAN addresses arriving through an overlay are not LAN input.
+		if len(p.SourceInterfaces) > 0 {
+			var outsideLAN []expr.Any
+			for _, name := range p.SourceInterfaces {
+				outsideLAN = append(outsideLAN, meta(expr.MetaKeyIIFNAME, nftablesIfname(name), true)...)
+			}
+			add(c, outsideLAN, bypass)
+		}
 		add(c, meta(expr.MetaKeyMARK, binaryutil.NativeEndian.PutUint32(p.BypassMark), false), bypass)
 		gids := p.BypassGIDs
 		if c == dns {
@@ -101,6 +110,14 @@ func (r *autoRedirect) setupCapturePolicy(nft *nftables.Conn, table *nftables.Ta
 	}
 	for _, n := range p.UDPBypass {
 		add(policy, append(proto(unix.IPPROTO_UDP), port(n)...), bypass)
+	}
+	// Reuse the provider-backed set, including live updates. This must run
+	// before UDP conntrack marks are restored, not only in the NAT chain.
+	// Fake addresses still need Mihomo even if a provider includes them.
+	if len(*r.routeExcludeAddressSet) > 0 {
+		matches := prefixExpr(p.FakeIP, false, true)
+		matches = append(matches, nftablesCreateDestinationIPSetExprs(3, "inet4_route_exclude_address_set", nftables.TableFamilyIPv4, false)...)
+		add(policy, matches, bypass)
 	}
 	// Only TCP/UDP can reach the transport-port expression below.
 	transport := nft.AddChain(&nftables.Chain{Table: table, Name: "capture_ports"})

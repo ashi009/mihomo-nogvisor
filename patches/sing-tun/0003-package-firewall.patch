@@ -1,0 +1,20 @@
+From: ashi009 <ashi009@users.noreply.github.com>
+Subject: [PATCH] tun: defer fw4 permissions to APK-script-managed zones
+
+The APK scripts install fixed UCI zones and LAN forwarding permissions.
+When the capture policy selects this integration, omit the broad fw4
+accepts around the TUN. Retain cleanup of an old include on shutdown.
+---
+diff --git a/redirect_nftables_rules_openwrt.go b/redirect_nftables_rules_openwrt.go
+--- a/redirect_nftables_rules_openwrt.go
++++ b/redirect_nftables_rules_openwrt.go
+@@ -12,6 +12,9 @@
+ )
+ 
+ func (r *autoRedirect) configureOpenWRTFirewall4(nft *nftables.Conn, cleanup bool) error {
++	if p := r.tunOptions.CapturePolicy; p != nil && p.Firewall4Managed {
++		cleanup = true
++	}
+ 	_, err := nft.ListTableOfFamily("fw4", nftables.TableFamilyINet)
+ 	if err != nil {
+ 		return nil

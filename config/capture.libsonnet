@@ -1,5 +1,5 @@
-// IPv4 proxy scope and DNS exceptions observed on cito-102.
-function(lan='192.168.20.0/24', mtu=1500) {
+// Shared IPv4 proxy scope and DNS exceptions.
+function(lanInterfaces=['br-lan'], mtu=1500) {
   // Console goes to logd; dashboard subscribers still receive info/debug events.
   'log-level': 'warning',
   // Match the existing router/FlClash health-check timing semantics.
@@ -8,7 +8,7 @@ function(lan='192.168.20.0/24', mtu=1500) {
   'external-ui-url': 'https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip',
   tun: {
     enable: true,
-    device: 'utun',
+    device: 'mihomo0',
     stack: 'system',
     mtu: mtu,
     'auto-route': true,
@@ -18,15 +18,18 @@ function(lan='192.168.20.0/24', mtu=1500) {
     'iproute2-rule-index': 5206,
     'auto-redirect-input-mark': 7892,
     'auto-redirect-output-mark': 7894,
-    'include-interface': ['br-lan', 'tailscale0'],
+    'include-interface': lanInterfaces,
     'inet6-address': [],
     'dns-hijack': [],
+    'route-exclude-address-set': ['cn-ip'],
     'route-exclude-address': [
       '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
       '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16', '224.0.0.0/3',
     ],
     'capture-policy': {
-      sources: [lan, '100.64.0.0/10'],
+      'firewall4-managed': true,
+      'source-interfaces': lanInterfaces,
+      sources: [],
       'dns6-sources': ['fd00::/8', 'fe80::/10'],
       'fake-ip': '28.0.0.0/8',
       ports: [22, 80, 443, 8080, 8443],

@@ -1,5 +1,5 @@
 // Pure configuration fragment. Enrollment keys are provisioned as a private file.
-function(hostname, prefixes, stateDir='tailnet', interface='tailscale0', authKeyFile='') {
+function(hostname='', prefixes=[], stateDir='tailnet', interface='tailscale0', authKeyFile='', advertiseInterfaces=[]) {
   tailnet: {
     enable: true,
     'firewall-mode': 'nftables',
@@ -11,6 +11,7 @@ function(hostname, prefixes, stateDir='tailnet', interface='tailscale0', authKey
     'auth-key-file': authKeyFile,
     'accept-routes': true,
     'advertise-routes': prefixes,
+    'advertise-interfaces': advertiseInterfaces,
     port: 41641,
   },
   dns: {

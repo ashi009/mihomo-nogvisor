@@ -32,6 +32,19 @@ apk add --allow-untrusted /tmp/mihomo-native-*.apk
 [透明代理策略](config/capture.libsonnet)、[Tailscale 配置](config/tailnet.libsonnet)
 组合。私有 Jsonnet 可以直接导入这些模块；端口例外、DNS 和路由参数均由它们生成。
 
+默认只指定 LAN 接口 `br-lan`。核心读取系统 hostname，并从该接口的实际 IPv4
+地址推导捕获范围和 Tailscale 广播路由；同一份 YAML 可用于不同路由器。
+接口不存在或没有可用 IPv4 地址时启动失败，不会扩大捕获范围。
+修改 hostname 或 LAN 地址后需重启服务，重新读取主机信息。
+
+APK 安装固定的 `tailscale0`、`mihomo0` 防火墙区域和各自的 LAN 转发规则，保留 masquerade 和 MSS 调整。
+捕获和 DNS 重定向只处理 LAN 入站。Tailnet 可以访问路由器服务及 LAN 主机；
+直接转发限制到 LAN。卸载删除包拥有的区域。
+
+原生捕获策略通过 `route-exclude-address-set: [cn-ip]` 将同名 IP 规则集交给
+nftables，随规则集更新同步。真实 CN-IP 目的地址直接转发，跳过 Mihomo 的规则判断；
+fake-IP 仍进入 Mihomo，CN-domain 规则也保留在那里。已有端口及 UDP 例外不变。
+
 新路由器可在本机用 OAuth 换取一次性、非临时节点的 auth key。
 OAuth 客户端需要 `auth_keys` 权限及相应的 tags，见
 [Tailscale OAuth 文档](https://tailscale.com/docs/features/oauth-clients)。

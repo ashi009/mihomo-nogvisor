@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+fragment=/usr/share/mihomo/tailnet-firewall.uci
+case "${1:-}" in apply|remove) ;; *) exit 2 ;; esac
+[ -z "$(uci changes firewall)" ] || {
+    echo 'Uncommitted UCI changes in firewall; refusing to commit them' >&2
+    exit 1
+}
+
+# Section names and values both come from the package fragment.
+for section in $(sed -n "s/^config [^ ]* '\([^']*\)'$/\1/p" "$fragment"); do
+    uci -q delete "firewall.$section" || :
+done
+if [ "$1" = apply ]; then
+    uci -m import firewall < "$fragment"
+fi
+uci commit firewall
+if [ -f /var/run/fw4.state ]; then
+    fw4 reload
+fi
