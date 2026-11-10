@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/metacubex/mihomo/component/tailnet"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/nftables"
@@ -104,7 +103,6 @@ func Cleanup(path string) error {
 		}
 	}
 	if cfg.Tailnet.Enable {
-		add(tailnet.CleanupListenerFirewall())
 		name := cfg.Tailnet.Interface
 		if name == "" {
 			name = "tailscale0"

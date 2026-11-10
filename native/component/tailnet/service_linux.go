@@ -6,9 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/metacubex/mihomo/component/resolver"
-	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/log"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -16,6 +13,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/metacubex/mihomo/component/resolver"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 
 	singtun "github.com/metacubex/sing-tun"
 
@@ -41,8 +42,6 @@ import (
 )
 
 type Config struct {
-	ProtectListeners    bool           `yaml:"protect-listeners" json:"protect-listeners"`
-	ProtectedPorts      []uint16       `yaml:"-" json:"-"`
 	FirewallMode        string         `yaml:"firewall-mode" json:"firewall-mode"`
 	Enable              bool           `yaml:"enable" json:"enable"`
 	Name                string         `yaml:"name" json:"name"`
@@ -186,16 +185,7 @@ func Start(c Config) (service *Service, retErr error) {
 	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return nil, fmt.Errorf("tailnet state already in use: %w", err)
 	}
-	if c.ProtectListeners {
-		if err := installListenerFirewall(c); err != nil {
-			return nil, err
-		}
-		add(func() {
-			if err := CleanupListenerFirewall(); err != nil {
-				log.Errorln("[Tailnet] listener firewall cleanup: %s", err)
-			}
-		})
-	}
+
 	auth := ""
 	if c.AuthKeyFile != "" {
 		b, err := os.ReadFile(c.AuthKeyFile)

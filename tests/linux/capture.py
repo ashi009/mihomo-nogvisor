@@ -164,7 +164,6 @@ config=json.loads(Path('/test/capture.json').read_text());(home/'config.json').w
 log=(home/'core.log').open('w+')
 core=None
 flow=None
-firewall=None
 (home/'cn-ip.yaml').write_text('payload: []\n')
 def update_bypass(prefixes):
     (home/'cn-ip.yaml').write_text('payload:\n' + ''.join('  - '+prefix+'\n' for prefix in prefixes))
@@ -190,14 +189,13 @@ def check_tailnet():
         check('router management remains reachable','10.66.0.1',18082,udp,'echo',namespace='tailclient')
     for port in [7890,19090,1053]:
         assert ns('client','python3',__file__,'connect','10.66.0.1',str(port)).strip()=='connected'
-        assert ns('tailclient','python3',__file__,'connect','10.66.0.1',str(port)).strip()=='blocked'
+        assert ns('tailclient','python3',__file__,'connect','10.66.0.1',str(port)).strip()=='connected'
     for transport in ['tcp','udp']:
         assert ns('client','python3',__file__,'dns','10.66.0.1',transport,'1053').strip()=='dns ok'
-        denied=sp.run(['ip','netns','exec','tailclient','python3',__file__,'dns','10.66.0.1',transport,'1053'],stdout=sp.DEVNULL,stderr=sp.DEVNULL)
-        assert denied.returncode!=0,'tailnet can use Mihomo DNS directly'
+        assert ns('tailclient','python3',__file__,'dns','10.66.0.1',transport,'1053').strip()=='dns ok'
         result=sp.run(['ip','netns','exec','tailclient','python3',__file__,'dns','fd77::2',transport],stdout=sp.DEVNULL,stderr=sp.DEVNULL)
         assert result.returncode!=0,'tailnet IPv6 DNS was intercepted'
-    print('PASS tailnet cannot access Mihomo proxy/controller/DNS listeners or hijack IPv6 DNS',flush=True)
+    print('PASS tailnet accesses router listeners without IPv6 DNS interception',flush=True)
 
 def start():
     p=sp.Popen(['/test/mihomo','-service','-d',str(home),'-f',str(home/'config.json')],stdout=log,stderr=log)
@@ -207,12 +205,6 @@ def start():
         if 'capture_select' in run('nft','list','ruleset') and json.loads(run('curl','-fsS','http://127.0.0.1:19090/configs'))['tun']['enable']:return p
     raise AssertionError('capture not ready')
 try:
-    firewall=sp.Popen(['/test/native.test','-test.run','^TestLANOnlyFirewallFixture$','-test.timeout=180s'],env=dict(os.environ,MIHOMO_FIREWALL_FIXTURE=str(home)),stdout=log,stderr=log)
-    for _ in range(100):
-        if firewall.poll() is not None:raise AssertionError('listener firewall fixture failed')
-        if (home/'firewall-ready').exists():break
-        time.sleep(.1)
-    assert (home/'firewall-ready').exists()
     core=start()
     assert config['tun']['device'] in ip('-br','link')
     assert not list(Path('/etc/nftables.d').glob('*auto-redirect*'))
@@ -300,8 +292,6 @@ try:
     occupied.close()
     assert 'table inet mihomo {' not in run('nft','list','ruleset')
     print('PASS DNS bind failure exits without installing interception',flush=True)
-    (home/'firewall-stop').touch();assert firewall.wait(timeout=10)==0;firewall=None
-    assert 'table inet mihomo_listeners' not in run('nft','list','ruleset')
     # Stopping/crashing the core does not remove package-owned firewall policy.
     assert 'mh_tailnet' in run('nft','list','table','inet','fw4')
     run(*helper,'remove');run(*helper,'remove')
@@ -311,8 +301,6 @@ try:
     check('removed package leaves no tailnet forwarding allow','10.66.0.2',7890,namespace='tailclient')
     print('PASS package removal deletes only owned UCI permissions',flush=True)
 finally:
-    if firewall and firewall.poll() is None:
-        (home/'firewall-stop').touch();firewall.wait(timeout=10)
     for process in [lan_echo,tail_echo,router_echo]:process.terminate();process.wait()
     if flow and flow.poll() is None:flow.terminate();flow.wait()
     if core and core.poll() is None:core.terminate();core.wait(timeout=15)
